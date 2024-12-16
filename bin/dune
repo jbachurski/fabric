@@ -1,0 +1,6 @@
+(executable
+ (public_name fabric)
+ (name main)
+ (libraries core fabric)
+ (preprocess
+  (pps ppx_jane)))

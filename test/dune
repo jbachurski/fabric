@@ -1,0 +1,4 @@
+(test
+ (name test_fabric)
+ (libraries core)
+ (preprocess (pps ppx_jane)))

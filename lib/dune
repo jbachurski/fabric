@@ -1,0 +1,6 @@
+(library
+ (name fabric)
+ (libraries core)
+ (inline_tests)
+ (preprocess
+  (pps ppx_jane)))
