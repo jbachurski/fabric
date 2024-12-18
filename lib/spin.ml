@@ -71,7 +71,7 @@ let compile expr : Yarn.Prog.t =
     | Lit v -> Lit v
     | Var x -> Var x
     | Abs (r, x, _t, e) ->
-        let closed = without (x :: externs) (free_variables e) in
+        let closed = without (r :: x :: externs) (free_variables e) in
         let sym = gensym () |> Name.of_string in
         let knot = "knot_" ^ Name.to_string sym |> Name.of_string in
         let closure = (sym, knot, closed, x, go fns e |> closure_ren r knot) in
@@ -124,4 +124,22 @@ let%expect_test "compile" =
        ((name tmp1) (knot knot_tmp1) (closed ()) (arg x)
         (body (Closure tmp2 (x))))))
      (externs (__add)) (main (Closure tmp1 ())))
+    |}];
+  print_s
+    [%sexp
+      (compile
+         (fn
+            ( "s",
+              Fun (Int, Int),
+              Abs (nm "f", nm "y", Int, App (var "f", App (var "s", var "y")))
+            ))
+        : Yarn.Prog.t)];
+  [%expect
+    {|
+    ((defs
+      (((name tmp4) (knot knot_tmp4) (closed (s)) (arg y)
+        (body (App (Var knot_tmp4) (App (Var s) (Var y)))))
+       ((name tmp3) (knot knot_tmp3) (closed ()) (arg s)
+        (body (Closure tmp4 (s))))))
+     (externs ()) (main (Closure tmp3 ())))
     |}]
