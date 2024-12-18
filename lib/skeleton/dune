@@ -1,0 +1,6 @@
+(library
+ (name fabric_skeleton)
+ (libraries core)
+ (inline_tests)
+ (preprocess
+  (pps ppx_jane)))
