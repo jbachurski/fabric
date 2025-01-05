@@ -1,0 +1,7 @@
+(library
+ (name assembly)
+ (libraries core binaryen)
+ (inline_tests)
+ (flags -cc clang++)
+ (preprocess
+  (pps ppx_jane)))

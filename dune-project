@@ -24,7 +24,9 @@
   (alcotest :with-test)
   expect-test
   core
-  ppx_jane))
+  ppx_jane
+  angstrom
+  binaryen))
 
 ;  (synopsis "A short synopsis")
 ;  (description "A longer description")

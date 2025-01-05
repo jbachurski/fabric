@@ -10,6 +10,8 @@ depends: [
   "expect-test"
   "core"
   "ppx_jane"
+  "angstrom"
+  "binaryen"
   "odoc" {with-doc}
 ]
 build: [
