@@ -1,14 +1,6 @@
 open Binaryen
 open Core
-
-module Expr = struct
-  type t =
-    | Var of string
-    | Lit of int
-    | Let of string * t * t
-    | Op of t * string * t
-  [@@deriving sexp]
-end
+module Source = Lang.Fabric
 
 let gensym =
   let cnt = ref 0 in
@@ -44,17 +36,27 @@ let%expect_test "example" =
     )
     |}]
 
+let rec of_source_type : Source.Type.t -> Type.t = function
+  | Any -> failwith "cannot access type Any"
+  | Int -> Type.int32
+  | Float -> Type.float64
+  | Tuple ts -> Type.create (List.map ~f:of_source_type ts |> Array.of_list)
+  | Function (_, _) -> Type.funcref
+  | Array _ -> Type.arrayref
+
 let assemble md slots expr =
-  let rec go env (expr : Expr.t) : Expression.t =
+  let rec go env (expr : Source.Expr.t) : Expression.t =
+    let open Source.Expr in
     match expr with
-    | Var x ->
+    | Fun (_, _) -> failwith "cannot assemble first-class functions"
+    | Var (x, t) ->
         Expression.Local_get.make md
           (List.Assoc.find_exn env ~equal:String.equal x)
           Type.int32
     | Lit n -> Expression.Const.make md (Literal.int32 (Int32.of_int_exn n))
-    | Let (x, e, e') ->
+    | Let (Atom (x, t), e, e') ->
         let a = go env e in
-        slots := Type.int32 :: !slots;
+        slots := of_source_type t :: !slots;
         let i = List.length env in
         Expression.Block.make md (gensym "let")
           [ Expression.Local_set.make md i a; go ((x, i) :: env) e' ]
@@ -65,9 +67,19 @@ let assemble md slots expr =
           | "-" -> Op.sub_int32
           | "*" -> Op.mul_int32
           | "/" -> Op.div_s_int32
+          | "+." -> Op.add_float64
+          | "-." -> Op.sub_float64
+          | "*." -> Op.mul_float64
+          | "/." -> Op.div_float64
           | _ -> raise_s [%message "no op for" (o : string)]
         in
         Expression.Binary.make md op (go env e) (go env e')
+    | Let _ -> failwith "unimplemented: non-Atom Let"
+    | Tuple _ -> failwith "unimplemented: Tuple"
+    | Array _ -> failwith "unimplemented: Array"
+    | Idx _ -> failwith "unimplemented: Idx"
+    | Shape _ -> failwith "unimplemented: Shape"
+    | Closure _ -> failwith "unimplemented: Closure"
   in
   go [] expr
 
@@ -77,13 +89,15 @@ let%expect_test "" =
   let e =
     assemble md slots
       (Let
-         ( "x",
+         ( Atom ("x", Int),
            Lit 3,
            Let
-             ( "y",
+             ( Atom ("y", Int),
                Lit 4,
-               Op (Op (Var "x", "*", Var "x"), "+", Op (Var "y", "*", Var "y"))
-             ) ))
+               Op
+                 ( Op (Var ("x", Int), "*", Var ("x", Int)),
+                   "+",
+                   Op (Var ("y", Int), "*", Var ("y", Int)) ) ) ))
   in
   Function.add_function md "f" Type.none Type.int32 (Array.of_list !slots) e
   |> ignore;

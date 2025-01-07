@@ -1,6 +1,6 @@
 (library
  (name assembly)
- (libraries core binaryen)
+ (libraries core binaryen lang)
  (inline_tests)
  (flags -cc clang++)
  (preprocess

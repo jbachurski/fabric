@@ -1,27 +1,26 @@
 open Angstrom
 open Core
-
-module Expr = struct
-  type t =
-    | Var of string
-    | Lit of int
-    | Let of string * t * t
-    | Fun of string * t
-    | Op of t * string * t
-  [@@deriving sexp]
-end
-
+open Lang.Fabric
 open Expr
 
-let keyword w =
-  let+ () = skip_while Char.is_whitespace
+let init_name_char c = Char.(is_alpha c || c = '_')
+let name_char c = Char.(is_alphanum c || c = '_')
+
+let token ~deny w =
+  let* () = skip_while Char.is_whitespace
   and+ _ = string w
+  and+ next = peek_char
   and+ () = skip_while Char.is_whitespace in
-  ()
+  if Option.map ~f:deny next |> Option.value ~default:false then
+    fail "keyword followed by a name character"
+  else return ()
+
+let keyword = token ~deny:name_char
+let special = token ~deny:(Fn.const false)
 
 let any_name =
-  let+ first = satisfy (fun c -> Char.(is_alpha c || c = '_'))
-  and+ main = take_while (function c -> Char.(is_alphanum c || c = '_'))
+  let+ first = satisfy init_name_char
+  and+ main = take_while name_char
   and+ primes = take_while (fun c -> Char.(c = '\'')) in
   Char.to_string first ^ main ^ primes
 
@@ -44,9 +43,22 @@ let%expect_test "parse var" =
   print_s [%sexp (parse "'x" : string option)];
   [%expect {| () |}]
 
+let type_ =
+  let+ () = keyword "int" in
+  Type.Int
+
 let var =
   let+ x = name in
-  Var x
+  Var (x, Any)
+
+let pattern =
+  fix (fun pattern ->
+      choice
+        [
+          special "(" *> pattern <* special ")";
+          (let+ x = name and+ t = special ":" *> type_ <|> return Type.Any in
+           Expr.Atom (x, t));
+        ])
 
 let int =
   let digits = take_while (function '0' .. '9' -> true | _ -> false) in
@@ -80,15 +92,16 @@ let%expect_test "parse lit" =
 
 let let_ expr =
   let+ () = keyword "let"
-  and+ x = name
-  and+ () = keyword "="
+  and+ x = pattern
+  and+ () = special "="
   and+ e = expr
   and+ () = keyword "in"
   and+ e' = expr in
   Let (x, e, e')
 
 let op =
-  take_while (fun c -> Char.(c = '+' || c = '-' || c = '*' || c = '/'))
+  take_while (fun c ->
+      Char.(c = '+' || c = '-' || c = '*' || c = '/' || c = '.'))
   >>| String.strip
 
 let ops expr =
@@ -103,15 +116,43 @@ let ops expr =
   in
   List.fold_left ~init:e ~f:(fun e' (o, e) -> Op (e', o, e)) es
 
-let par expr = keyword "(" *> expr <* keyword ")"
-let pat = fix (fun pat -> choice [ keyword "(" *> pat <* keyword ")"; name ])
+let par expr = special "(" *> expr <* special ")"
 
 let fun_ expr =
-  let+ x = pat and+ () = keyword "=>" and+ e = expr in
+  let+ x = pattern and+ () = special "=>" and+ e = expr in
   Fun (x, e)
 
+let idx expr0 expr =
+  let+ e = expr0
+  and+ js =
+    many1
+      (let+ () = special "[" and+ j = expr and+ () = special "]" in
+       j)
+  in
+  List.fold_left js ~init:e ~f:(fun e j -> Idx (e, j))
+
+let shape_pattern expr =
+  let+ () = special "["
+  and+ i = name
+  and+ () = special ":"
+  and+ n = expr
+  and+ () = special "]" in
+  (i, n)
+
+let arr expr =
+  let+ i, n = shape_pattern expr and+ () = special "=>" and+ e = expr in
+  Array (i, n, e)
+
+let shape expr0 =
+  let+ () = special "#" and+ e = expr0 in
+  Shape e
+
 let expr =
-  fix (fun expr -> ops (choice [ par expr; let_ expr; fun_ expr; var; lit ]))
+  fix (fun expr ->
+      let expr0 = par expr <|> var <|> lit in
+      choice
+        [ let_ expr; idx expr0 expr; arr expr; shape expr0; fun_ expr; expr0 ]
+      |> ops)
   <?> "expr"
 
 let parse = parse_string ~consume:All expr
@@ -120,30 +161,55 @@ let%expect_test "parse expr" =
   print_s [%sexp (parse "1" : (Expr.t, string) result)];
   [%expect {| (Ok (Lit 1)) |}];
   print_s [%sexp (parse "x" : (Expr.t, string) result)];
-  [%expect {| (Ok (Var x)) |}];
+  [%expect {| (Ok (Var x Any)) |}];
   print_s [%sexp (parse "x x" : (Expr.t, string) result)];
-  [%expect {| (Ok (Op (Var x) "" (Var x))) |}];
+  [%expect {| (Ok (Op (Var x Any) "" (Var x Any))) |}];
   print_s [%sexp (parse "((x) ((x)))" : (Expr.t, string) result)];
-  [%expect {| (Ok (Op (Var x) "" (Var x))) |}];
+  [%expect {| (Ok (Op (Var x Any) "" (Var x Any))) |}];
   print_s [%sexp (parse "x y z" : (Expr.t, string) result)];
-  [%expect {| (Ok (Op (Op (Var x) "" (Var y)) "" (Var z))) |}];
+  [%expect {| (Ok (Op (Op (Var x Any) "" (Var y Any)) "" (Var z Any))) |}];
   print_s [%sexp (parse "let x = 1 in x" : (Expr.t, string) result)];
-  [%expect {| (Ok (Let x (Lit 1) (Var x))) |}];
+  [%expect {| (Ok (Let (Atom x Any) (Lit 1) (Var x Any))) |}];
   print_s
     [%sexp
       (parse "let x = let y = 1 in y in let z = 2 in z"
         : (Expr.t, string) result)];
-  [%expect {| (Ok (Let x (Let y (Lit 1) (Var y)) (Let z (Lit 2) (Var z)))) |}];
+  [%expect
+    {|
+    (Ok
+     (Let (Atom x Any) (Let (Atom y Any) (Lit 1) (Var y Any))
+      (Let (Atom z Any) (Lit 2) (Var z Any))))
+    |}];
+  print_s [%sexp (parse "x: int => x" : (Expr.t, string) result)];
+  [%expect {| (Ok (Fun (Atom x Int) (Var x Any))) |}];
   print_s [%sexp (parse "x => y => z => x y z" : (Expr.t, string) result)];
   [%expect
-    {| (Ok (Fun x (Fun y (Fun z (Op (Op (Var x) "" (Var y)) "" (Var z)))))) |}];
+    {|
+    (Ok
+     (Fun (Atom x Any)
+      (Fun (Atom y Any)
+       (Fun (Atom z Any) (Op (Op (Var x Any) "" (Var y Any)) "" (Var z Any))))))
+    |}];
   print_s
     [%sexp
       (parse "f => (x => g (x x)) (x => g (x x))" : (Expr.t, string) result)];
   [%expect
     {|
     (Ok
-     (Fun f
-      (Op (Fun x (Op (Var g) "" (Op (Var x) "" (Var x)))) ""
-       (Fun x (Op (Var g) "" (Op (Var x) "" (Var x)))))))
+     (Fun (Atom f Any)
+      (Op (Fun (Atom x Any) (Op (Var g Any) "" (Op (Var x Any) "" (Var x Any))))
+       "" (Fun (Atom x Any) (Op (Var g Any) "" (Op (Var x Any) "" (Var x Any)))))))
+    |}];
+  print_s [%sexp (parse "[i: 5] => f i" : (Expr.t, string) result)];
+  [%expect {| (Ok (Array i (Lit 5) (Op (Var f Any) "" (Var i Any)))) |}];
+  print_s [%sexp (parse "[i: #a] => a[i]" : (Expr.t, string) result)];
+  [%expect
+    {| (Ok (Array i (Shape (Var a Any)) (Idx (Var a Any) (Var i Any)))) |}];
+  print_s [%sexp (parse "[i: 5] => a[i+1][i+2]" : (Expr.t, string) result)];
+  [%expect
+    {|
+    (Ok
+     (Array i (Lit 5)
+      (Idx (Idx (Var a Any) (Op (Var i Any) + (Lit 1)))
+       (Op (Var i Any) + (Lit 2)))))
     |}]

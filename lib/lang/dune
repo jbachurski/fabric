@@ -1,6 +1,6 @@
 (library
- (name syntax)
- (libraries core angstrom lang)
+ (name lang)
+ (libraries core)
  (inline_tests)
  (preprocess
   (pps ppx_jane)))
