@@ -158,58 +158,33 @@ let expr =
 let parse = parse_string ~consume:All expr
 
 let%expect_test "parse expr" =
-  print_s [%sexp (parse "1" : (Expr.t, string) result)];
-  [%expect {| (Ok (Lit 1)) |}];
-  print_s [%sexp (parse "x" : (Expr.t, string) result)];
-  [%expect {| (Ok (Var x Any)) |}];
-  print_s [%sexp (parse "x x" : (Expr.t, string) result)];
-  [%expect {| (Ok (Op (Var x Any) "" (Var x Any))) |}];
-  print_s [%sexp (parse "((x) ((x)))" : (Expr.t, string) result)];
-  [%expect {| (Ok (Op (Var x Any) "" (Var x Any))) |}];
-  print_s [%sexp (parse "x y z" : (Expr.t, string) result)];
-  [%expect {| (Ok (Op (Op (Var x Any) "" (Var y Any)) "" (Var z Any))) |}];
-  print_s [%sexp (parse "let x = 1 in x" : (Expr.t, string) result)];
-  [%expect {| (Ok (Let (Atom x Any) (Lit 1) (Var x Any))) |}];
-  print_s
-    [%sexp
-      (parse "let x = let y = 1 in y in let z = 2 in z"
-        : (Expr.t, string) result)];
-  [%expect
-    {|
-    (Ok
-     (Let (Atom x Any) (Let (Atom y Any) (Lit 1) (Var y Any))
-      (Let (Atom z Any) (Lit 2) (Var z Any))))
-    |}];
-  print_s [%sexp (parse "x: int => x" : (Expr.t, string) result)];
-  [%expect {| (Ok (Fun (Atom x Int) (Var x Any))) |}];
-  print_s [%sexp (parse "x => y => z => x y z" : (Expr.t, string) result)];
-  [%expect
-    {|
-    (Ok
-     (Fun (Atom x Any)
-      (Fun (Atom y Any)
-       (Fun (Atom z Any) (Op (Op (Var x Any) "" (Var y Any)) "" (Var z Any))))))
-    |}];
-  print_s
-    [%sexp
-      (parse "f => (x => g (x x)) (x => g (x x))" : (Expr.t, string) result)];
-  [%expect
-    {|
-    (Ok
-     (Fun (Atom f Any)
-      (Op (Fun (Atom x Any) (Op (Var g Any) "" (Op (Var x Any) "" (Var x Any))))
-       "" (Fun (Atom x Any) (Op (Var g Any) "" (Op (Var x Any) "" (Var x Any)))))))
-    |}];
-  print_s [%sexp (parse "[i: 5] => f i" : (Expr.t, string) result)];
-  [%expect {| (Ok (Array i (Lit 5) (Op (Var f Any) "" (Var i Any)))) |}];
-  print_s [%sexp (parse "[i: #a] => a[i]" : (Expr.t, string) result)];
-  [%expect
-    {| (Ok (Array i (Shape (Var a Any)) (Idx (Var a Any) (Var i Any)))) |}];
-  print_s [%sexp (parse "[i: 5] => a[i+1][i+2]" : (Expr.t, string) result)];
-  [%expect
-    {|
-    (Ok
-     (Array i (Lit 5)
-      (Idx (Idx (Var a Any) (Op (Var i Any) + (Lit 1)))
-       (Op (Var i Any) + (Lit 2)))))
-    |}]
+  let pparse s =
+    print_s
+      [%sexp (parse s |> Result.map ~f:Expr.pretty : (Sexp.t, string) result)]
+  in
+  pparse "1";
+  [%expect {| (Ok 1) |}];
+  pparse "x";
+  [%expect {| (Ok x) |}];
+  pparse "x x";
+  [%expect {| (Ok (x x)) |}];
+  pparse "((x) ((x)))";
+  [%expect {| (Ok (x x)) |}];
+  pparse "x y z";
+  [%expect {| (Ok ((x y) z)) |}];
+  pparse "let x = 1 in x";
+  [%expect {| (Ok (let x = 1 in x)) |}];
+  pparse "let x = let y = 1 in y in let z = 2 in z";
+  [%expect {| (Ok (let x = (let y = 1 in y) in (let z = 2 in z))) |}];
+  pparse "x: int => x";
+  [%expect {| (Ok ((x : int) => x)) |}];
+  pparse "x => y => z => x y z";
+  [%expect {| (Ok (x => (y => (z => ((x y) z))))) |}];
+  pparse "f => (x => g (x x)) (x => g (x x))";
+  [%expect {| (Ok (f => ((x => (g (x x))) (x => (g (x x)))))) |}];
+  pparse "[i: 5] => f i";
+  [%expect {| (Ok ([ i : 5 ] => (f i))) |}];
+  pparse "[i: #a] => a[i]";
+  [%expect {| (Ok ([ i : (# a) ] => ([] a i))) |}];
+  pparse "[i: 5] => a[i+1][i+2]";
+  [%expect {| (Ok ([ i : 5 ] => ([] ([] a (+ i 1)) (+ i 2)))) |}]

@@ -52,11 +52,11 @@ let lift expr =
           let xs = free e |> capturing x in
           let k = List.length !functions in
           functions := (xs, x, e) :: !functions;
-          Closure (k, xs)
+          Closure (k, xs, Function (Expr.type_pattern x, Expr.type_expr e))
       | e -> e)
   in
-  let body = go expr in
-  Prog.{ functions = List.rev !functions; body }
+  let main = go expr in
+  Prog.{ functions = List.rev !functions; main }
 
 let%expect_test "lift" =
   let z =
@@ -72,16 +72,15 @@ let%expect_test "lift" =
                     (Op (Var ("x", Any), "", Var ("x", Any)), "", Var ("v", Any))
                 ) ) ))
   in
-  print_s [%sexp (lift (Fun (Atom ("f", Any), Op (z, "", z))) : Prog.t)];
+  print_s (lift (Fun (Atom ("f", Any), Op (z, "", z))) |> Prog.pretty);
   [%expect
     {|
     ((functions
-      ((((x Any)) (Atom v Any)
-        (Op (Op (Var x Any) "" (Var x Any)) "" (Var v Any)))
-       (((f Any)) (Atom x Any) (Op (Var f Any) "" (Closure 0 ((x Any)))))
-       (((x Any)) (Atom v Any)
-        (Op (Op (Var x Any) "" (Var x Any)) "" (Var v Any)))
-       (((f Any)) (Atom x Any) (Op (Var f Any) "" (Closure 2 ((x Any)))))
-       (() (Atom f Any) (Op (Closure 3 ((f Any))) "" (Closure 1 ((f Any)))))))
-     (body (Closure 4 ())))
+      ((capture (x) params v body ((x x) v))
+       (capture (f) params x body (f (closure 0 ((x Any)) (* -> *))))
+       (capture (x) params v body ((x x) v))
+       (capture (f) params x body (f (closure 2 ((x Any)) (* -> *))))
+       (capture () params f body
+        ((closure 3 ((f Any)) (* -> *)) (closure 1 ((f Any)) (* -> *))))))
+     (main (closure 4 () (* -> *))))
     |}]
