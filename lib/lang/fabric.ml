@@ -13,12 +13,16 @@ module Type = struct
   let rec pretty =
     let open Sexp in
     function
-    | Any -> Atom "*"
+    | Any -> Atom "?"
     | Int -> Atom "int"
     | Float -> Atom "float"
     | Tuple ts -> List (List.map ~f:pretty ts)
     | Function (s, t) -> List [ pretty s; Atom "->"; pretty t ]
     | Array t -> List [ Atom "[]"; pretty t ]
+
+  let unwrap_function = function
+    | Function (t, t') -> (t, t')
+    | t -> raise_s [%message "not a function" (t : t)]
 
   let unwrap_array = function
     | Array t -> t
@@ -38,6 +42,7 @@ module Expr = struct
     | Array of string * t * t
     | Idx of t * t
     | Shape of t
+    | Intrinsic of string * t
     | Op of t * string * t
     | Closure of int * (string * Type.t) list * Type.t
   [@@deriving equal, sexp]
@@ -74,6 +79,7 @@ module Expr = struct
           ]
     | Idx (e, e') -> List [ Atom "[]"; pretty e; pretty e' ]
     | Shape e -> List [ Atom "#"; pretty e ]
+    | Intrinsic (f, e) -> List [ Atom f; pretty e ]
     | Op (e, "", e') -> List [ pretty e; pretty e' ]
     | Op (e, o, e') -> List [ Atom o; pretty e; pretty e' ]
     | Closure (k, xs, t) ->
@@ -99,6 +105,7 @@ module Expr = struct
         | Array (i, e, e') -> Array (i, go0 e, go (Atom (i, Int)) e')
         | Idx (e, e') -> Idx (go0 e, go0 e')
         | Shape e -> Shape (go0 e)
+        | Intrinsic (f, e) -> Intrinsic (f, go0 e)
         | Op (e, o, e') -> Op (go0 e, o, go0 e')
         | Closure (k, xs, t) -> Closure (k, xs, t))
 
@@ -115,6 +122,7 @@ module Expr = struct
     | Array (i, e, e') -> !!e <|> !!e' <| Atom (i, Int)
     | Idx (e, e') -> !!e <|> !!e'
     | Shape e -> !!e
+    | Intrinsic (_, e) -> !!e
     | Op (e, _o, e') -> !!e <|> !!e'
     | Closure (_k, xs, _t) ->
         List.map ~f:( !. ) xs |> List.fold_left ~init:z ~f:( <|> )
@@ -140,6 +148,7 @@ module Expr = struct
     | Array (_, _, e) -> Array (type_expr e)
     | Idx (e, _) -> Type.unwrap_array (type_expr e)
     | Shape _ -> Int
+    | Intrinsic (_, e) -> type_expr e
     | Op (e, _, _) -> type_expr e
     | Closure (_, _, t) -> t
 end

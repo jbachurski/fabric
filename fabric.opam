@@ -12,6 +12,7 @@ depends: [
   "ppx_jane"
   "angstrom"
   "binaryen"
+  "owi"
   "odoc" {with-doc}
 ]
 build: [

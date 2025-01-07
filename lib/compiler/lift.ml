@@ -38,10 +38,10 @@ let%expect_test "lift" =
     {|
     ((functions
       ((capture (x) params v body ((x x) v))
-       (capture (f) params x body (f (closure 0 ((x Any)) (* -> *))))
+       (capture (f) params x body (f (closure 0 ((x Any)) (? -> ?))))
        (capture (x) params v body ((x x) v))
-       (capture (f) params x body (f (closure 2 ((x Any)) (* -> *))))
+       (capture (f) params x body (f (closure 2 ((x Any)) (? -> ?))))
        (capture () params f body
-        ((closure 3 ((f Any)) (* -> *)) (closure 1 ((f Any)) (* -> *))))))
-     (main (closure 4 () (* -> (* -> *)))))
+        ((closure 3 ((f Any)) (? -> ?)) (closure 1 ((f Any)) (? -> ?))))))
+     (main (closure 4 () (? -> (? -> ?)))))
     |}]

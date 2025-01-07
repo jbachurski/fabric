@@ -148,10 +148,22 @@ let shape expr =
   let+ () = special "#" and+ e = atomic expr in
   Shape e
 
+let print expr =
+  let+ () = special "?" and+ e = atomic expr in
+  Intrinsic ("print", e)
+
 let expr =
   fix (fun expr ->
       choice
-        [ let_ expr; idx expr; arr expr; shape expr; fun_ expr; atomic expr ]
+        [
+          let_ expr;
+          idx expr;
+          arr expr;
+          shape expr;
+          print expr;
+          fun_ expr;
+          atomic expr;
+        ]
       |> ops)
   <?> "expr"
 

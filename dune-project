@@ -26,7 +26,8 @@
   core
   ppx_jane
   angstrom
-  binaryen))
+  binaryen
+  owi))
 
 ;  (synopsis "A short synopsis")
 ;  (description "A longer description")
