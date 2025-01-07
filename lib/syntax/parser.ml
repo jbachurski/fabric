@@ -117,13 +117,14 @@ let ops expr =
   List.fold_left ~init:e ~f:(fun e' (o, e) -> Op (e', o, e)) es
 
 let par expr = special "(" *> expr <* special ")"
+let atomic expr = par expr <|> var <|> lit
 
 let fun_ expr =
   let+ x = pattern and+ () = special "=>" and+ e = expr in
   Fun (x, e)
 
-let idx expr0 expr =
-  let+ e = expr0
+let idx expr =
+  let+ e = atomic expr
   and+ js =
     many1
       (let+ () = special "[" and+ j = expr and+ () = special "]" in
@@ -143,15 +144,14 @@ let arr expr =
   let+ i, n = shape_pattern expr and+ () = special "=>" and+ e = expr in
   Array (i, n, e)
 
-let shape expr0 =
-  let+ () = special "#" and+ e = expr0 in
+let shape expr =
+  let+ () = special "#" and+ e = atomic expr in
   Shape e
 
 let expr =
   fix (fun expr ->
-      let expr0 = par expr <|> var <|> lit in
       choice
-        [ let_ expr; idx expr0 expr; arr expr; shape expr0; fun_ expr; expr0 ]
+        [ let_ expr; idx expr; arr expr; shape expr; fun_ expr; atomic expr ]
       |> ops)
   <?> "expr"
 
