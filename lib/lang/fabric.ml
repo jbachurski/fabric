@@ -81,17 +81,24 @@ module Expr = struct
             Type.pretty t;
           ]
 
-  let rec transform f = function
-    | Var (x, t) -> f (Var (x, t))
-    | Lit n -> f (Lit n)
-    | Let (x, e, e') -> f (Let (x, transform f e, transform f e'))
-    | Fun (x, e) -> f (Fun (x, transform f e))
-    | Tuple es -> f (Tuple (List.map ~f:(transform f) es))
-    | Array (i, e, e') -> f (Array (i, transform f e, transform f e'))
-    | Idx (e, e') -> f (Idx (transform f e, transform f e'))
-    | Shape e -> f (Shape (transform f e))
-    | Op (e, o, e') -> f (Op (transform f e, o, transform f e'))
-    | Closure (k, xs, t) -> f (Closure (k, xs, t))
+  let rec traverse env ( <| ) f =
+    let go0 e = traverse env ( <| ) f e in
+    let go (x : pattern) e = traverse (env <| x) ( <| ) f e in
+    fun e ->
+      f env
+        (match e with
+        | Var (x, t) -> Var (x, t)
+        | Lit n -> Lit n
+        | Let (x, e, e') -> Let (x, go0 e, go x e')
+        | Fun (x, e) -> Fun (x, go x e)
+        | Tuple es -> Tuple (List.map ~f:go0 es)
+        | Array (i, e, e') -> Array (i, go0 e, go (Atom (i, Int)) e')
+        | Idx (e, e') -> Idx (go0 e, go0 e')
+        | Shape e -> Shape (go0 e)
+        | Op (e, o, e') -> Op (go0 e, o, go0 e')
+        | Closure (k, xs, t) -> Closure (k, xs, t))
+
+  let transform f = traverse () (fun x _ -> x) (fun () e -> f e)
 
   let rec var_reduce z ( !. ) ( <| ) ( <|> ) (e : t) =
     let ( !! ) = var_reduce z ( !. ) ( <| ) ( <|> ) in
