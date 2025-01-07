@@ -91,6 +91,10 @@ let assemble_expr md fv expr =
     | Closure (k, xs, t) ->
         assert (List.is_empty xs);
         lit md k
+    | Intrinsic ("print", e) ->
+        Expression.Call.make md "print" [ go env e ] Type.none
+    | Intrinsic ("print_i32", e) ->
+        Expression.Call.make md "print_i32" [ go env e ] Type.none
     | Intrinsic (f, _) -> failwith ("unimplemented: Intrinsic " ^ f)
     | Let _ -> failwith "unimplemented: non-Atom Let"
     | Tuple _ -> failwith "unimplemented: Tuple"
@@ -153,32 +157,36 @@ let assemble Source.Prog.{ functions; main } =
       assemble_function md ("_f" ^ string_of_int i) (fv, p, e) |> ignore);
   assemble_function md "main" ([], List [], main) |> Function.set_start md;
   Export.add_function_export md "main" "main" |> ignore;
+  Import.add_function_import md "print_i32" "spectest" "print_i32" Type.int32
+    Type.none;
   Table.add_active_element_segment md "f" "elem"
     (List.init funs ~f:(fun i -> "_f" ^ string_of_int i))
     (lit md 0)
   |> ignore;
-
   md
 
 let%expect_test "assemble" =
   let md =
-    "let f = (x: int => 2 * x) in let g = (x: int => x + 1) in f (g 1)"
-    |> Syntax.parse_exn |> Compiler.propagate_types |> Compiler.lift_lambdas
-    |> assemble
+    "let f = (x: int => 2 * x) in let g = (x: int => x + 1) in %print_i32 (f \
+     (g 1))" |> Syntax.parse_exn |> Compiler.propagate_types
+    |> Compiler.lift_lambdas |> assemble
   in
   print_s [%message (Module.validate md : int)];
   Module.print_stack_ir md true;
-  Module.dispose md;
   Module.interpret md;
+  Module.dispose md;
   [%expect
     {|
     ("Module.validate md" 1)
     (module
      (type $i32_=>_i32 (func (param i32) (result i32)))
-     (type $none_=>_i32 (func (result i32)))
+     (type $none_=>_none (func))
+     (type $i32_=>_none (func (param i32)))
+     (import "spectest" "print_i32" (func $print_i32 (param i32)))
      (table $f 2 2 funcref)
      (elem $elem (i32.const 0) $_f0 $_f1)
      (export "main" (func $main))
+     (start $main)
      (func $_f0 (param $0 i32) (result i32)
       (local $1 i32)
       local.get $0
@@ -191,7 +199,7 @@ let%expect_test "assemble" =
       local.get $0
       i32.mul
      )
-     (func $main (result i32)
+     (func $main
       (local $0 i32)
       (local $1 i32)
       i32.const 1
@@ -203,6 +211,8 @@ let%expect_test "assemble" =
       call_indirect $f (type $i32_=>_i32)
       local.get $0
       call_indirect $f (type $i32_=>_i32)
+      call $print_i32
      )
     )
+    4 : i32
     |}]

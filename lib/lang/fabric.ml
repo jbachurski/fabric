@@ -10,6 +10,8 @@ module Type = struct
     | Array of t
   [@@deriving equal, sexp]
 
+  let unit = Tuple []
+
   let rec pretty =
     let open Sexp in
     function
@@ -148,7 +150,9 @@ module Expr = struct
     | Array (_, _, e) -> Array (type_expr e)
     | Idx (e, _) -> Type.unwrap_array (type_expr e)
     | Shape _ -> Int
-    | Intrinsic (_, e) -> type_expr e
+    | Intrinsic ("print", _) -> Type.unit
+    | Intrinsic ("print_i32", _) -> Type.unit
+    | Intrinsic _ -> Any
     | Op (e, _, _) -> type_expr e
     | Closure (_, _, t) -> t
 end

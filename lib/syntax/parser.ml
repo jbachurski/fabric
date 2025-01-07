@@ -148,9 +148,12 @@ let shape expr =
   let+ () = special "#" and+ e = atomic expr in
   Shape e
 
-let print expr =
-  let+ () = special "?" and+ e = atomic expr in
-  Intrinsic ("print", e)
+let intrinsic expr =
+  let+ () = skip_while Char.is_whitespace
+  and+ _ = string "%"
+  and+ f = name
+  and+ e = atomic expr in
+  Intrinsic (f, e)
 
 let expr =
   fix (fun expr ->
@@ -160,7 +163,7 @@ let expr =
           idx expr;
           arr expr;
           shape expr;
-          print expr;
+          intrinsic expr;
           fun_ expr;
           atomic expr;
         ]
