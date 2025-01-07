@@ -1,6 +1,6 @@
 (library
  (name compiler)
- (libraries core lang)
+ (libraries core lang syntax)
  (inline_tests)
  (preprocess
   (pps ppx_jane)))

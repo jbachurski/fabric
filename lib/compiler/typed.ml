@@ -14,8 +14,9 @@ let propagate =
                 [%message "not in scope: " (Expr.pretty_var (x, t) : Sexp.t)])
       | _ -> e)
 
-let%expect_test "free" =
-  print_s (propagate (Fun (Atom ("x", Int), Var ("x", Any))) |> Expr.pretty);
+let%expect_test "propagate" =
+  let test s = s |> Syntax.parse_exn |> propagate |> Expr.pretty |> print_s in
+  test "(x: int) => x";
   [%expect {| ((x : int) => (x : int)) |}];
-  print_s (propagate (Fun (Atom ("x", Int), Var ("x", Int))) |> Expr.pretty);
+  test "(x: int) => x";
   [%expect {| ((x : int) => (x : int)) |}]
