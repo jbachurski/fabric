@@ -52,7 +52,7 @@ let assemble md slots expr =
     | Var (x, t) ->
         Expression.Local_get.make md
           (List.Assoc.find_exn env ~equal:String.equal x)
-          Type.int32
+          (of_source_type t)
     | Lit n -> Expression.Const.make md (Literal.int32 (Int32.of_int_exn n))
     | Let (Atom (x, t), e, e') ->
         let a = go env e in
@@ -87,17 +87,8 @@ let%expect_test "" =
   let md = Module.create () in
   let slots = ref [] in
   let e =
-    assemble md slots
-      (Let
-         ( Atom ("x", Int),
-           Lit 3,
-           Let
-             ( Atom ("y", Int),
-               Lit 4,
-               Op
-                 ( Op (Var ("x", Int), "*", Var ("x", Int)),
-                   "+",
-                   Op (Var ("y", Int), "*", Var ("y", Int)) ) ) ))
+    "let x = 3 in let y = 4 in (x * x) + (y * y)" |> Syntax.parse_exn
+    |> Compiler.propagate_types |> assemble md slots
   in
   Function.add_function md "f" Type.none Type.int32 (Array.of_list !slots) e
   |> ignore;

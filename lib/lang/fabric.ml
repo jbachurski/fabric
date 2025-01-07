@@ -8,7 +8,7 @@ module Type = struct
     | Tuple of t list
     | Function of t * t
     | Array of t
-  [@@deriving sexp]
+  [@@deriving equal, sexp]
 
   let rec pretty =
     let open Sexp in
@@ -19,11 +19,15 @@ module Type = struct
     | Tuple ts -> List (List.map ~f:pretty ts)
     | Function (s, t) -> List [ pretty s; Atom "->"; pretty t ]
     | Array t -> List [ Atom "[]"; pretty t ]
+
+  let unwrap_array = function
+    | Array t -> t
+    | t -> raise_s [%message "not an array" (t : t)]
 end
 
 module Expr = struct
   type pattern = Atom of string * Type.t | List of pattern list
-  [@@deriving sexp]
+  [@@deriving equal, sexp]
 
   type t =
     | Var of string * Type.t
@@ -36,7 +40,7 @@ module Expr = struct
     | Shape of t
     | Op of t * string * t
     | Closure of int * (string * Type.t) list * Type.t
-  [@@deriving sexp]
+  [@@deriving equal, sexp]
 
   let pretty_var = function
     | x, Type.Any -> Sexp.Atom x
@@ -115,11 +119,29 @@ module Expr = struct
     | Closure (_k, xs, _t) ->
         List.map ~f:( !. ) xs |> List.fold_left ~init:z ~f:( <|> )
 
+  let rec type_onto_pattern (t : Type.t) (p : pattern) : pattern =
+    match (t, p) with
+    | t', Atom (x, _t) -> Atom (x, t')
+    | Tuple ts, List ps -> List (List.map2_exn ~f:type_onto_pattern ts ps)
+    | _ ->
+        raise_s
+          [%message "cannot type pattern" (t : Type.t) "with" (p : pattern)]
+
   let rec type_pattern : pattern -> Type.t = function
     | Atom (_, t) -> t
     | List ps -> Tuple (List.map ~f:type_pattern ps)
 
-  let type_expr _ = Type.Any
+  let rec type_expr = function
+    | Var (_, t) -> t
+    | Lit _ -> Int
+    | Let (_, _, e') -> type_expr e'
+    | Fun (x, e) -> Function (type_pattern x, type_expr e)
+    | Tuple es -> Tuple (List.map ~f:type_expr es)
+    | Array (_, _, e) -> Array (type_expr e)
+    | Idx (e, _) -> Type.unwrap_array (type_expr e)
+    | Shape _ -> Int
+    | Op (e, _, _) -> type_expr e
+    | Closure (_, _, t) -> t
 end
 
 module Prog = struct

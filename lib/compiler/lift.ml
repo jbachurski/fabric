@@ -33,6 +33,7 @@ let%expect_test "lift" =
                 ) ) ))
   in
   print_s (lift (Fun (Atom ("f", Any), Op (z, "", z))) |> Prog.pretty);
+  (* these types aren't really good for anything since they are actually infinite *)
   [%expect
     {|
     ((functions
@@ -42,5 +43,5 @@ let%expect_test "lift" =
        (capture (f) params x body (f (closure 2 ((x Any)) (* -> *))))
        (capture () params f body
         ((closure 3 ((f Any)) (* -> *)) (closure 1 ((f Any)) (* -> *))))))
-     (main (closure 4 () (* -> *))))
+     (main (closure 4 () (* -> (* -> *)))))
     |}]
