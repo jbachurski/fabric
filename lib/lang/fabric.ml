@@ -40,12 +40,12 @@ module Expr = struct
     | Op (e, o, e') -> f (Op (transform f e, o, transform f e'))
     | Closure (k, xs) -> f (Closure (k, xs))
 
-  let rec var_reduce z ( !. ) ( <| ) ( <|> ) =
+  let rec var_reduce z ( !. ) ( <| ) ( <|> ) (e : t) =
     let ( !! ) = var_reduce z ( !. ) ( <| ) ( <|> ) in
-    function
+    match e with
     | Var (x, t) -> !.(x, t)
     | Lit _ -> z
-    | Let (x, e, e') -> !!e <|> !!e' <| x
+    | Let (x, e, e') -> !!e <|> (!!e' <| x)
     | Fun (x, e) -> !!e <| x
     | Tuple es -> List.map ~f:( !! ) es |> List.fold_left ~init:z ~f:( <|> )
     | Array (i, e, e') -> !!e <|> !!e' <| Atom (i, Int)

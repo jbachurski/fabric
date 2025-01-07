@@ -11,21 +11,9 @@ let capturing p =
       not (List.exists ~f:(fun (y, _) -> String.equal x y) ys))
 
 let free =
-  let rec go : Expr.t -> (string * Type.t) list = function
-    | Var (x, t) -> [ (x, t) ]
-    | Lit _ -> []
-    | Let (x, e, e') -> go e @ (go e' |> capturing x)
-    | Fun (x, e) -> go e |> capturing x
-    | Tuple es -> List.concat (List.map ~f:go es)
-    | Array (i, e, e') -> go e @ (go e' |> capturing (Atom (i, Int)))
-    | Idx (e, e') -> go e @ go e'
-    | Shape e -> go e
-    | Op (e, _o, e') -> go e @ go e'
-    | Closure (_k, xs) -> xs
-  in
-  fun e ->
-    go e
-    |> List.dedup_and_sort ~compare:(fun (x, _) (y, _) -> String.compare x y)
+ fun e ->
+  Expr.var_reduce [] List.singleton (Fn.flip capturing) ( @ ) e
+  |> List.dedup_and_sort ~compare:(fun (x, _) (y, _) -> String.compare x y)
 
 let%expect_test "free" =
   print_s
