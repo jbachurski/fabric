@@ -1,0 +1,1 @@
+let assemble = Asm.assemble

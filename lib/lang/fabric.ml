@@ -1,5 +1,27 @@
 open Core
 
+module Repr = struct
+  type atom = Int32 | Float64 | Box
+  type t = Unknown | Atoms of atom list
+
+  let nothing = Atoms []
+
+  let ( ++ ) t t' =
+    match (t, t') with
+    | Unknown, _ | _, Unknown -> Unknown
+    | Atoms t, Atoms t' -> Atoms (t @ t')
+
+  let cat = List.fold_right ~init:nothing ~f:( ++ )
+
+  let pretty_atom =
+    let open Sexp in
+    function Int32 -> Atom "i32" | Float64 -> Atom "f64" | Box -> Atom "box"
+
+  let pretty =
+    let open Sexp in
+    function Unknown -> Atom "?" | Atoms t -> List (List.map ~f:pretty_atom t)
+end
+
 module Type = struct
   type t =
     | Any
@@ -9,6 +31,13 @@ module Type = struct
     | Function of t * t
     | Array of t
   [@@deriving equal, sexp]
+
+  let rec repr : t -> Repr.t = function
+    | Any -> Unknown
+    | Int -> Atoms [ Int32 ]
+    | Float -> Atoms [ Float64 ]
+    | Tuple ts -> Repr.cat (List.map ~f:repr ts)
+    | Function _ | Array _ -> Atoms [ Box ]
 
   let unit = Tuple []
 

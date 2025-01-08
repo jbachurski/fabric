@@ -1,6 +1,6 @@
 (library
  (name fabric)
- (libraries core)
+ (libraries core assembly compiler lang syntax types)
  (inline_tests)
  (preprocess
   (pps ppx_jane)))
