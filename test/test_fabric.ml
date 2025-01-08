@@ -6,6 +6,17 @@ let%expect_test "" =
   print_endline "Hello, world!";
   [%expect {| Hello, world! |}]
 
+let%expect_test "" =
+  let md = Binaryer.C.Functions.module_create () in
+  Binaryer.C.Functions.module_print md;
+  Binaryer.C.Functions.module_dispose md;
+  print_endline "Hello, world!";
+  [%expect {|
+    Hello, world!
+    (module
+    )
+    |}]
+
 (* 
 let () =
   let open Binaryen in

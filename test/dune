@@ -1,6 +1,6 @@
 (library
  (name test_fabric)
- (libraries core fabric)
+ (libraries core fabric binaryer)
  (inline_tests)
  (preprocess
   (pps ppx_jane)))
