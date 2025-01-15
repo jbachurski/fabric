@@ -49,7 +49,7 @@ module Types (F : Ctypes.TYPE) = struct
   open! F
 
   module Index = struct
-    type t = Unsigned.uint32
+    type t = Unsigned.UInt32.t
 
     let t = uint32_t
   end
@@ -62,6 +62,16 @@ module Types (F : Ctypes.TYPE) = struct
         type inner = Uintptr.t
 
         let t = uintptr_t
+      end)
+
+  module Operator =
+    Wrap
+      (F)
+      (struct
+        type phantom
+        type inner = Signed.Int32.t
+
+        let t = int32_t
       end)
 
   module Module =

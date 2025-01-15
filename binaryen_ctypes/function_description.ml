@@ -30,12 +30,81 @@ module Functions (F : Ctypes.FOREIGN) = struct
       foreign "BinaryenAddFunction"
         (T.Module.t @-> string @-> T.Type.t @-> T.Type.t @-> ptr T.Type.t
        @-> T.Index.t @-> T.Expression.t @-> returning T.Function.t)
+
+    let get_name =
+      foreign "BinaryenFunctionGetName" (T.Function.t @-> returning string)
+
+    let set_body =
+      foreign "BinaryenFunctionSetBody"
+        (T.Function.t @-> T.Expression.t @-> returning void)
   end
 
+  module Type = struct
+    let ( !! ) name =
+      foreign ("BinaryenType" ^ name) (void @-> returning T.Type.t)
+
+    let none = !!"None"
+    let int32 = !!"Int32"
+    let int64 = !!"Int64"
+    let float32 = !!"Float32"
+    let float64 = !!"Float64"
+    let unreachable = !!"Unreachable"
+    let auto = !!"Auto"
+
+    let tuple =
+      foreign "BinaryenTypeCreate"
+        (ptr T.Type.t @-> T.Index.t @-> returning T.Type.t)
+
+    let arity = foreign "BinaryenTypeArity" (T.Type.t @-> returning uint32_t)
+
+    let expand =
+      foreign "BinaryenTypeExpand" (T.Type.t @-> ptr T.Type.t @-> returning void)
+  end
+
+  module Literal = struct end
+
   module Expression = struct
+    module Operator = struct
+      let ( !! ) name =
+        foreign ("Binaryen" ^ name) (void @-> returning T.Operator.t)
+
+      module I32 = struct
+        let add = !!"AddInt32"
+        let sub = !!"SubInt32"
+        let mul = !!"MulInt32"
+        let div_s = !!"DivSInt32"
+        let div_u = !!"DivUInt32"
+      end
+    end
+
+    let unary =
+      foreign "BinaryenUnary"
+        (T.Module.t @-> T.Operator.t @-> T.Expression.t
+       @-> returning T.Expression.t)
+
+    let binary =
+      foreign "BinaryenBinary"
+        (T.Module.t @-> T.Operator.t @-> T.Expression.t @-> T.Expression.t
+       @-> returning T.Expression.t)
+
     let local_get =
       foreign "BinaryenLocalGet"
         (T.Module.t @-> T.Index.t @-> T.Type.t @-> returning T.Expression.t)
+
+    let local_set =
+      foreign "BinaryenLocalSet"
+        (T.Module.t @-> T.Index.t @-> T.Expression.t
+       @-> returning T.Expression.t)
+
+    let unreachable =
+      foreign "BinaryenUnreachable" (T.Module.t @-> returning T.Expression.t)
+  end
+
+  module Control = struct
+    let block =
+      foreign "BinaryenBlock"
+        (T.Module.t @-> string_opt @-> ptr T.Expression.t @-> T.Index.t
+       @-> T.Type.t @-> returning T.Expression.t)
   end
 
   module Table = struct
@@ -69,5 +138,11 @@ module Functions (F : Ctypes.FOREIGN) = struct
         (T.Module.t @-> T.Index.t @-> T.Index.t @-> string @-> ptr string
        @-> ptr string @-> ptr bool @-> ptr T.Expression.t @-> ptr T.Index.t
        @-> T.Index.t @-> bool @-> bool @-> string @-> returning void)
+  end
+
+  module Export = struct
+    let function_ =
+      foreign "BinaryenAddFunctionExport"
+        (T.Module.t @-> string @-> string @-> returning T.Export.t)
   end
 end
