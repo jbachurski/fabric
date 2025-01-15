@@ -1,6 +1,6 @@
 (library
- (name binaryer)
- (libraries ctypes)
+ (name binaryen_ctypes)
+ (libraries ctypes core)
  ; ctypes backward compatibility shims warn sometimes; suppress them
  (flags
   (:standard -w -9-27))
@@ -17,4 +17,4 @@
    (instance Functions)
    (functor Function_description))
   (generated_types Types_generated)
-  (generated_entry_point C)))
+  (generated_entry_point Binaryen_ctypes)))

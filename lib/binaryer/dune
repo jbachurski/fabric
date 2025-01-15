@@ -1,0 +1,3 @@
+(library
+ (name binaryer)
+ (libraries core binaryen_ctypes))
