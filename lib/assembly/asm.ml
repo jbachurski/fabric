@@ -242,13 +242,13 @@ let%expect_test "assemble" =
     "let g = (x: int => 2*x) in let f = (x: int => x+1) in %print_i32 (g (f 1))"
     (fun md ->
       (* Module.print md; *)
+      interpret md;
       optimize md;
-      print_stack_ir md
-      (* FIXME: [interpret] fails on this example *)
-      (* interpret md *));
+      print_stack_ir md);
   [%expect
     {|
     (valid true)
+    4 : i32
     (module
      (type $0 (func (param i32 i32) (result i32)))
      (type $1 (func))

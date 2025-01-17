@@ -8,7 +8,6 @@ let () =
   in
   let valid = Binaryer.C.Module.validate md <> 0 in
   assert valid;
+  Binaryer.C.Module.interpret md;
   Binaryer.C.Module.optimize md;
-  Binaryer.C.Module.print md;
-  (* This aborts *)
-  Binaryer.C.Module.interpret md
+  Binaryer.C.Module.print_stack_ir md
