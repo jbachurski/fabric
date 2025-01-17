@@ -74,6 +74,9 @@ module Functions (F : Ctypes.FOREIGN) = struct
     let float32 = !!"Float32"
     let float64 = !!"Float64"
     let funcref = !!"Funcref"
+    let anyref = !!"Anyref"
+    let structref = !!"Structref"
+    let arrayref = !!"Arrayref"
     let unreachable = !!"Unreachable"
     let auto = !!"Auto"
 
@@ -90,7 +93,7 @@ module Functions (F : Ctypes.FOREIGN) = struct
       let ( !!! ) name =
         foreign ("BinaryenPackedType" ^ name) (void @-> returning T.PackedType.t)
 
-      let not_packed = !!!"NotPacked"
+      let no = !!!"NotPacked"
       let int8 = !!!"Int8"
       let int16 = !!!"Int16"
     end
@@ -102,6 +105,9 @@ module Functions (F : Ctypes.FOREIGN) = struct
       let grow =
         foreign "TypeBuilderGrow"
           (T.TypeBuilder.t @-> T.Index.t @-> returning void)
+
+      let size =
+        foreign "TypeBuilderGetSize" (T.TypeBuilder.t @-> returning T.Index.t)
 
       let set_struct =
         foreign "TypeBuilderSetStructType"
@@ -119,6 +125,10 @@ module Functions (F : Ctypes.FOREIGN) = struct
           @-> ptr T.TypeBuilderErrorReason.t
           @-> returning bool)
     end
+
+    let of_heap_type =
+      foreign "BinaryenTypeFromHeapType"
+        (T.HeapType.t @-> bool @-> returning T.Type.t)
   end
 
   module Literal = struct
@@ -193,6 +203,40 @@ module Functions (F : Ctypes.FOREIGN) = struct
         (T.Module.t @-> string @-> T.Expression.t @-> ptr T.Expression.t
        @-> T.Index.t @-> T.Type.t @-> T.Type.t @-> returning T.Expression.t)
 
+    let struct_new =
+      foreign "BinaryenStructNew"
+        (T.Module.t @-> ptr T.Expression.t @-> T.Index.t @-> T.HeapType.t
+       @-> returning T.Expression.t)
+
+    let struct_get =
+      foreign "BinaryenStructGet"
+        (T.Module.t @-> T.Index.t @-> T.Expression.t @-> T.Type.t @-> bool
+       @-> returning T.Expression.t)
+
+    let struct_set =
+      foreign "BinaryenStructSet"
+        (T.Module.t @-> T.Index.t @-> T.Expression.t @-> T.Expression.t
+       @-> returning T.Expression.t)
+
+    let array_new =
+      foreign "BinaryenArrayNew"
+        (T.Module.t @-> T.HeapType.t @-> T.Expression.t @-> T.Expression.t
+       @-> returning T.Expression.t)
+
+    let array_get =
+      foreign "BinaryenArrayGet"
+        (T.Module.t @-> T.Expression.t @-> T.Expression.t @-> T.Type.t @-> bool
+       @-> returning T.Expression.t)
+
+    let array_set =
+      foreign "BinaryenArraySet"
+        (T.Module.t @-> T.Expression.t @-> T.Expression.t @-> T.Expression.t
+       @-> returning T.Expression.t)
+
+    let array_len =
+      foreign "BinaryenArrayLen"
+        (T.Module.t @-> T.Expression.t @-> returning T.Expression.t)
+
     let unreachable =
       foreign "BinaryenUnreachable" (T.Module.t @-> returning T.Expression.t)
   end
@@ -254,7 +298,10 @@ module Functions (F : Ctypes.FOREIGN) = struct
   end
 
   module Features = struct
-    let reference_types =
-      foreign "BinaryenFeatureReferenceTypes" (void @-> returning T.Features.t)
+    let ( !! ) name =
+      foreign ("BinaryenFeature" ^ name) (void @-> returning T.Features.t)
+
+    let gc = !!"GC"
+    let reference_types = !!"ReferenceTypes"
   end
 end

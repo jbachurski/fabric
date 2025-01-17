@@ -6,7 +6,9 @@ type expr = T.Expression.t
 
 module type Context = sig
   val me : T.Module.t
+  val feature : (unit -> T.Features.t) -> unit
   val validate : unit -> bool
+  val interpret : unit -> unit
   val optimize : unit -> unit
   val print : unit -> unit
   val print_stack_ir : unit -> unit
@@ -14,6 +16,7 @@ module type Context = sig
 
   module Const : sig
     val i32 : int32 -> expr
+    val i32' : int -> expr
   end
 
   module Operator : sig
@@ -87,4 +90,20 @@ module type Context = sig
 
   val addr :
     size:int -> offset:int -> ?align:int -> ?mem:string -> typ -> expr -> Cell.t
+
+  module Struct : sig
+    type t = { struct_type : T.HeapType.t; fields : (string * typ) list }
+
+    val t : (string * Type.field) list -> t
+    val make : t -> (string * expr) list -> expr
+    val cell : t -> expr -> string -> Cell.t
+  end
+
+  module Array : sig
+    type t = { array_type : T.HeapType.t; elem_type : typ }
+
+    val t : Type.field -> t
+    val make : t -> init:expr -> expr -> expr
+    val cell : t -> expr -> expr -> Cell.t
+  end
 end
