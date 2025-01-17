@@ -1,23 +1,8 @@
-module C = Binaryen_ctypes.Functions
-module T = Binaryen_ctypes.Types
+open! Core
+open Common
 
 type uint32 = Unsigned.UInt32.t
 type expr = T.Expression.t
-
-module Cell0 = struct
-  type loc =
-    | Local of { idx : uint32 }
-    | Global of { name : string; mut : bool; handle : T.Global.t }
-    | Address of {
-        addr : expr;
-        size : uint32;
-        offset : uint32;
-        align : uint32;
-        mem : string;
-      }
-
-  type t = { typ : T.Type.t; loc : loc }
-end
 
 module type Context = sig
   val me : T.Module.t
@@ -44,14 +29,14 @@ module type Context = sig
   end
 
   module Cell : sig
-    type t = Cell0.t
+    type t = Cell.Cell0.t
 
     val ( ! ) : t -> expr
     val ( := ) : t -> expr -> expr
   end
 
   module Control : sig
-    val block : ?name:string -> ?typ:T.Type.t -> expr list -> expr
+    val block : ?name:string -> ?typ:typ -> expr list -> expr
   end
 
   module Function : sig
@@ -59,23 +44,20 @@ module type Context = sig
 
     val make :
       ?name:string ->
-      params:T.Type.t ->
-      result:T.Type.t ->
+      params:typ ->
+      result:typ ->
       (Cell.t list -> expr) ->
       T.Function.t
 
     val export : string -> T.Function.t -> unit
     val start : T.Function.t -> unit
-    val import : string -> string -> string -> T.Type.t -> T.Type.t -> unit
-
-    val call_indirect :
-      string -> expr -> expr list -> T.Type.t -> T.Type.t -> expr
-
-    val call : string -> expr list -> T.Type.t -> expr
+    val import : string -> string -> string -> typ -> typ -> unit
+    val call_indirect : string -> expr -> expr list -> typ -> typ -> expr
+    val call : string -> expr list -> typ -> expr
   end
 
   module Table : sig
-    val make : initial:int -> maximum:int -> T.Type.t -> string -> T.Table.t
+    val make : initial:int -> maximum:int -> typ -> string -> T.Table.t
     val add : string -> T.Table.t -> T.Function.t list -> T.Element_segment.t
   end
 
@@ -100,15 +82,9 @@ module type Context = sig
       unit
   end
 
-  val local : T.Type.t -> Cell.t
-  val global : ?mut:bool -> string -> T.Type.t -> expr -> Cell.t
+  val local : typ -> Cell.t
+  val global : ?mut:bool -> string -> typ -> expr -> Cell.t
 
   val addr :
-    size:int ->
-    offset:int ->
-    ?align:int ->
-    ?mem:string ->
-    T.Type.t ->
-    expr ->
-    Cell.t
+    size:int -> offset:int -> ?align:int -> ?mem:string -> typ -> expr -> Cell.t
 end

@@ -64,6 +64,43 @@ module Types (F : Ctypes.TYPE) = struct
         let t = uintptr_t
       end)
 
+  module PackedType =
+    Wrap
+      (F)
+      (struct
+        type phantom
+        type inner = Unsigned.UInt32.t
+
+        let t = uint32_t
+      end)
+
+  module HeapType =
+    Wrap
+      (F)
+      (struct
+        type phantom
+        type inner = Uintptr.t
+
+        let t = uintptr_t
+      end)
+
+  module TypeBuilder =
+    Ref
+      (F)
+      (struct
+        let name = "TypeBuilder"
+      end)
+
+  module TypeBuilderErrorReason =
+    Wrap
+      (F)
+      (struct
+        type phantom
+        type inner = Unsigned.UInt32.t
+
+        let t = uint32_t
+      end)
+
   module Literal = struct
     type t
     type v

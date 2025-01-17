@@ -85,6 +85,40 @@ module Functions (F : Ctypes.FOREIGN) = struct
 
     let expand =
       foreign "BinaryenTypeExpand" (T.Type.t @-> ptr T.Type.t @-> returning void)
+
+    module Packed = struct
+      let ( !!! ) name =
+        foreign ("BinaryenPackedType" ^ name) (void @-> returning T.PackedType.t)
+
+      let not_packed = !!!"NotPacked"
+      let int8 = !!!"Int8"
+      let int16 = !!!"Int16"
+    end
+
+    module Builder = struct
+      let create =
+        foreign "TypeBuilderCreate" (T.Index.t @-> returning T.TypeBuilder.t)
+
+      let grow =
+        foreign "TypeBuilderGrow"
+          (T.TypeBuilder.t @-> T.Index.t @-> returning void)
+
+      let set_struct =
+        foreign "TypeBuilderSetStructType"
+          (T.TypeBuilder.t @-> T.Index.t @-> ptr T.Type.t @-> ptr T.PackedType.t
+         @-> ptr bool @-> int @-> returning void)
+
+      let set_array =
+        foreign "TypeBuilderSetArrayType"
+          (T.TypeBuilder.t @-> T.Index.t @-> T.Type.t @-> T.PackedType.t @-> int
+         @-> returning void)
+
+      let build_and_dispose =
+        foreign "TypeBuilderBuildAndDispose"
+          (T.TypeBuilder.t @-> ptr T.HeapType.t @-> ptr T.Index.t
+          @-> ptr T.TypeBuilderErrorReason.t
+          @-> returning bool)
+    end
   end
 
   module Literal = struct
