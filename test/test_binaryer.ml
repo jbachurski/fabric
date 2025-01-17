@@ -34,7 +34,8 @@ let%expect_test "basic" =
     ~result:Type.int32
     (fun args ->
       let a, b = take2 args in
-      Operator.I32.(Local.((!a * !a) + (!b * !b))))
+      Operator.I32.(
+        Cell.((!a * !a) + (!b * !b) + (Int32.of_int_exn 1 |> Const.i32))))
   |> Function.export "test";
   assert (validate ());
   optimize ();
@@ -42,7 +43,7 @@ let%expect_test "basic" =
   [%expect
     {|
     (module
-     (type $i32_i32_=>_i32 (func (param i32 i32) (result i32)))
+     (type $0 (func (param i32 i32) (result i32)))
      (export "test" (func $test))
      (func $test (param $0 i32) (param $1 i32) (result i32)
       local.get $0
@@ -51,6 +52,8 @@ let%expect_test "basic" =
       local.get $1
       local.get $1
       i32.mul
+      i32.add
+      i32.const 1
       i32.add
      )
     )
@@ -77,9 +80,9 @@ let%expect_test "locals" =
     ~params:(Type.cat [ Type.int32; Type.int32 ])
     ~result:Type.int32
     (fun args ->
-      let open Local in
+      let open Cell in
       let a, b = take2 args in
-      let r = new_local Type.int32 in
+      let r = local Type.int32 in
       Control.block
         Operator.I32.
           [
@@ -95,7 +98,7 @@ let%expect_test "locals" =
   [%expect
     {|
     (module
-     (type $i32_i32_=>_i32 (func (param i32 i32) (result i32)))
+     (type $0 (func (param i32 i32) (result i32)))
      (export "test" (func $test))
      (func $test (param $0 i32) (param $1 i32) (result i32)
       (local $2 i32)
@@ -130,6 +133,27 @@ let%expect_test "locals" =
        (local.get $0)
       )
       (local.get $2)
+     )
+    )
+    |}]
+
+let%expect_test "memory" =
+  let (module Ctx) = context () in
+  let open Ctx in
+  Memory.set ~initial:10 ~maximum:10 ();
+  Function.make ~params:Type.none ~result:Type.int32 (fun _ ->
+      Const.i32 (Int32.of_int_exn 42))
+  |> Function.export "test";
+  assert (validate ());
+  print ();
+  [%expect
+    {|
+    (module
+     (type $0 (func (result i32)))
+     (memory $__memory__ 10 10)
+     (export "test" (func $__fun1))
+     (func $__fun1 (result i32)
+      (i32.const 42)
      )
     )
     |}]

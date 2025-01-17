@@ -1,3 +1,5 @@
 (library
  (name binaryer)
- (libraries core binaryen_ctypes))
+ (libraries core binaryen_ctypes)
+ (preprocess
+  (pps ppx_jane)))

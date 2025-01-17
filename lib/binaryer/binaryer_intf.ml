@@ -1,7 +1,23 @@
 module C = Binaryen_ctypes.Functions
 module T = Binaryen_ctypes.Types
 
+type uint32 = Unsigned.UInt32.t
 type expr = T.Expression.t
+
+module Cell0 = struct
+  type loc =
+    | Local of { idx : uint32 }
+    | Global of { name : string; mut : bool; handle : T.Global.t }
+    | Address of {
+        addr : expr;
+        size : uint32;
+        offset : uint32;
+        align : uint32;
+        mem : string;
+      }
+
+  type t = { typ : T.Type.t; loc : loc }
+end
 
 module type Context = sig
   val me : T.Module.t
@@ -9,6 +25,11 @@ module type Context = sig
   val optimize : unit -> unit
   val print : unit -> unit
   val print_stack_ir : unit -> unit
+  val print_asm_js : unit -> unit
+
+  module Const : sig
+    val i32 : int32 -> expr
+  end
 
   module Operator : sig
     val unary : (unit -> T.Operator.t) -> expr -> expr
@@ -22,8 +43,8 @@ module type Context = sig
     end
   end
 
-  module Local : sig
-    type t = { typ : T.Type.t; idx : Unsigned.uint32 }
+  module Cell : sig
+    type t = Cell0.t
 
     val ( ! ) : t -> expr
     val ( := ) : t -> expr -> expr
@@ -40,12 +61,54 @@ module type Context = sig
       ?name:string ->
       params:T.Type.t ->
       result:T.Type.t ->
-      (Local.t list -> expr) ->
+      (Cell.t list -> expr) ->
       T.Function.t
 
     val export : string -> T.Function.t -> unit
     val start : T.Function.t -> unit
+    val import : string -> string -> string -> T.Type.t -> T.Type.t -> unit
+
+    val call_indirect :
+      string -> expr -> expr list -> T.Type.t -> T.Type.t -> expr
+
+    val call : string -> expr list -> T.Type.t -> expr
   end
 
-  val new_local : T.Type.t -> Local.t
+  module Table : sig
+    val make : initial:int -> maximum:int -> T.Type.t -> string -> T.Table.t
+    val add : string -> T.Table.t -> T.Function.t list -> T.Element_segment.t
+  end
+
+  module Memory : sig
+    type segment = {
+      name : string;
+      data : string;
+      passive : bool;
+      offset : expr;
+      size : uint32;
+    }
+
+    val set :
+      initial:int ->
+      maximum:int ->
+      ?shared:bool ->
+      ?memory64:bool ->
+      ?segments:segment list ->
+      ?export_name:string ->
+      ?name:string ->
+      unit ->
+      unit
+  end
+
+  val local : T.Type.t -> Cell.t
+  val global : ?mut:bool -> string -> T.Type.t -> expr -> Cell.t
+
+  val addr :
+    size:int ->
+    offset:int ->
+    ?align:int ->
+    ?mem:string ->
+    T.Type.t ->
+    expr ->
+    Cell.t
 end

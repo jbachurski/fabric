@@ -64,6 +64,33 @@ module Types (F : Ctypes.TYPE) = struct
         let t = uintptr_t
       end)
 
+  module Literal = struct
+    type t
+    type v
+
+    (* Making this structure explicit seems impossible in ctypes currently
+       see: https://discuss.ocaml.org/t/ctypes-nested-anonymous-unions/1605
+       Thankfully, this approach leaves the struct incomplete and uses
+       the header's definition. *)
+    (* 
+    let v : v union typ = union "BinaryenLiteralData"
+    let i32 = field v "i32" int32_t
+    let i64 = field v "i64" int64_t
+    let f32 = field v "f32" float
+    let f64 = field v "f64" double
+    let v128 = field v "v128" (array 16 uint8_t)
+    let func = field v "func" string
+    let () = seal v
+    *)
+    let t : t structure typ = structure "BinaryenLiteral"
+    (* 
+    let typ = field t "type" Type.t
+    let value = field t "data" (array 16 uint8_t)
+    *)
+
+    let () = seal t
+  end
+
   module Operator =
     Wrap
       (F)
@@ -136,4 +163,10 @@ module Types (F : Ctypes.TYPE) = struct
       (struct
         let name = "BinaryenElementSegment"
       end)
+
+  module Features = struct
+    type t = Unsigned.UInt32.t
+
+    let t = uint32_t
+  end
 end
