@@ -9,10 +9,12 @@ module type Context = sig
   val feature : (unit -> T.Features.t) -> unit
   val validate : unit -> bool
   val interpret : unit -> unit
-  val optimize : unit -> unit
+  val __optimize : unit -> unit
   val print : unit -> unit
   val print_stack_ir : unit -> unit
   val print_asm_js : unit -> unit
+  val write : unit -> string
+  val write_stack_ir : unit -> string
 
   module Const : sig
     val i32 : int32 -> expr

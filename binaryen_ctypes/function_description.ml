@@ -28,6 +28,16 @@ module Functions (F : Ctypes.FOREIGN) = struct
           (T.Module.t @-> T.Features.t @-> returning void)
     end
 
+    module Optimize = struct
+      let get = foreign "BinaryenGetOptimizeLevel" (void @-> returning int)
+      let set = foreign "BinaryenSetOptimizeLevel" (int @-> returning void)
+    end
+
+    module Shrink = struct
+      let get = foreign "BinaryenGetShrinkLevel" (void @-> returning int)
+      let set = foreign "BinaryenSetShrinkLevel" (int @-> returning void)
+    end
+
     (* Transformation *)
 
     let validate =
@@ -45,6 +55,18 @@ module Functions (F : Ctypes.FOREIGN) = struct
 
     let print_stack_ir =
       foreign "BinaryenModulePrintStackIR" (T.Module.t @-> returning void)
+
+    let write =
+      foreign "BinaryenModuleWriteText"
+        (T.Module.t @-> ptr char @-> size_t @-> returning size_t)
+
+    let write_stack_ir =
+      foreign "BinaryenModuleWriteStackIR"
+        (T.Module.t @-> ptr char @-> size_t @-> returning size_t)
+
+    let write_wasm =
+      foreign "BinaryenModuleWrite"
+        (T.Module.t @-> ptr char @-> size_t @-> returning size_t)
 
     let interpret =
       foreign "BinaryenModuleInterpret" (T.Module.t @-> returning void)
@@ -202,6 +224,10 @@ module Functions (F : Ctypes.FOREIGN) = struct
       foreign "BinaryenCallIndirect"
         (T.Module.t @-> string @-> T.Expression.t @-> ptr T.Expression.t
        @-> T.Index.t @-> T.Type.t @-> T.Type.t @-> returning T.Expression.t)
+
+    let ref_cast =
+      foreign "BinaryenRefCast"
+        (T.Module.t @-> T.Expression.t @-> T.Type.t @-> returning T.Expression.t)
 
     let struct_new =
       foreign "BinaryenStructNew"

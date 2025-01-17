@@ -38,7 +38,7 @@ let%expect_test "basic" =
         Cell.((!a * !a) + (!b * !b) + (Int32.of_int_exn 1 |> Const.i32))))
   |> Function.export "test";
   assert (validate ());
-  optimize ();
+  __optimize ();
   print_stack_ir ();
   [%expect
     {|
@@ -222,7 +222,7 @@ let%expect_test "struct" =
         let foobar_t =
           t Type.[ ("foo", field ~mut:true int32); ("bar", field int32) ]
         in
-        let q = local (Type.of_heap_type foobar_t.struct_type) in
+        let q = local Type.anyref in
         let q_foo = cell foobar_t !q "foo" in
         let q_bar = cell foobar_t !q "bar" in
         Control.block
@@ -239,10 +239,9 @@ let%expect_test "struct" =
   Function.start main;
   assert (validate ());
   interpret ();
-  print ();
+  print_endline (write ());
   [%expect
     {|
-    1337 : i32
     (module
      (type $0 (struct (field (mut i32)) (field i32)))
      (type $1 (func (param i32)))
@@ -252,7 +251,7 @@ let%expect_test "struct" =
      (export "main" (func $__fun1))
      (start $__fun1)
      (func $__fun1 (type $2)
-      (local $0 (ref $0))
+      (local $0 anyref)
       (local.set $0
        (struct.new $0
         (i32.const 42)
@@ -260,21 +259,31 @@ let%expect_test "struct" =
        )
       )
       (struct.set $0 0
-       (local.get $0)
+       (ref.cast (ref $0)
+        (local.get $0)
+       )
        (i32.add
         (struct.get $0 0
-         (local.get $0)
+         (ref.cast (ref $0)
+          (local.get $0)
+         )
         )
         (struct.get $0 1
-         (local.get $0)
+         (ref.cast (ref $0)
+          (local.get $0)
+         )
         )
        )
       )
       (call $print_i32
        (struct.get $0 0
-        (local.get $0)
+        (ref.cast (ref $0)
+         (local.get $0)
+        )
        )
       )
      )
     )
+
+    1337 : i32
     |}]

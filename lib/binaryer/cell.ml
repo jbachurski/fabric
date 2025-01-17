@@ -12,8 +12,16 @@ module Cell0 = struct
         align : uint32;
         mem : string;
       }
-    | Struct of { target : T.Expression.t; field_idx : T.Index.t }
-    | Array of { target : T.Expression.t; idx : T.Expression.t }
+    | Struct of {
+        target : T.Expression.t;
+        struct_type : T.HeapType.t;
+        field_idx : T.Index.t;
+      }
+    | Array of {
+        target : T.Expression.t;
+        array_type : T.HeapType.t;
+        idx : T.Expression.t;
+      }
 
   type t = { typ : typ; loc : loc }
 end
@@ -32,8 +40,16 @@ struct
         align : uint32;
         mem : string;
       }
-    | Struct of { target : T.Expression.t; field_idx : T.Index.t }
-    | Array of { target : T.Expression.t; idx : T.Expression.t }
+    | Struct of {
+        target : T.Expression.t;
+        struct_type : T.HeapType.t;
+        field_idx : T.Index.t;
+      }
+    | Array of {
+        target : T.Expression.t;
+        array_type : T.HeapType.t;
+        idx : T.Expression.t;
+      }
 
   type t = Cell0.t = { typ : typ; loc : Cell0.loc }
 
@@ -57,9 +73,14 @@ struct
     | Global { name; _ } -> C.Expression.global_get M.me name typ
     | Address { addr; size; offset; align; mem } ->
         C.Expression.load M.me size false offset align typ addr mem
-    | Struct { target; field_idx } ->
-        C.Expression.struct_get M.me field_idx target typ false
-    | Array { target; idx } -> C.Expression.array_get M.me target idx typ false
+    | Struct { target; struct_type; field_idx } ->
+        C.Expression.struct_get M.me field_idx
+          (C.Expression.ref_cast M.me target (Type.of_heap_type struct_type))
+          typ false
+    | Array { target; array_type; idx } ->
+        C.Expression.array_get M.me
+          (C.Expression.ref_cast M.me target (Type.of_heap_type array_type))
+          idx typ false
 
   let ( := ) { typ; loc } expr =
     match loc with
@@ -69,7 +90,12 @@ struct
         raise_s [%message "global" name "is declared immutable"]
     | Address { addr; size; offset; align; mem } ->
         C.Expression.store M.me size offset align addr expr typ mem
-    | Struct { target; field_idx } ->
-        C.Expression.struct_set M.me field_idx target expr
-    | Array { target; idx } -> C.Expression.array_set M.me target idx expr
+    | Struct { target; struct_type; field_idx } ->
+        C.Expression.struct_set M.me field_idx
+          (C.Expression.ref_cast M.me target (Type.of_heap_type struct_type))
+          expr
+    | Array { target; array_type; idx } ->
+        C.Expression.array_set M.me
+          (C.Expression.ref_cast M.me target (Type.of_heap_type array_type))
+          idx expr
 end

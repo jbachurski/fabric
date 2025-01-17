@@ -19,10 +19,13 @@ struct
 
   let validate () = C.Module.validate me <> 0
   let interpret () = C.Module.interpret me
-  let optimize () = C.Module.optimize me
+  let __optimize () = C.Module.optimize me
   let print () = C.Module.print me
   let print_stack_ir () = C.Module.print_stack_ir me
   let print_asm_js () = C.Module.print_asm_js me
+  let write () = with_c_buffer (C.Module.write me)
+  let write_stack_ir () = with_c_buffer (C.Module.write_stack_ir me)
+  let write_wasm () = with_c_buffer (C.Module.write me)
 
   module Const = Const.Make (M)
   module Operator = Operator.Make (M)
@@ -57,11 +60,12 @@ struct
       let inits_start, inits_len = c_args T.Expression.t inits' in
       C.Expression.struct_new M.me inits_start inits_len struct_type
 
-    let cell { struct_type = _; fields } target name =
+    let cell { struct_type; fields } target name =
       let i, (_, typ) =
         List.findi_exn fields ~f:(fun _ (name', _) -> String.(name = name'))
       in
-      Cell.{ typ; loc = Struct { target; field_idx = u32_of_int i } }
+      Cell.
+        { typ; loc = Struct { target; struct_type; field_idx = u32_of_int i } }
   end
 
   module Array = struct
@@ -72,8 +76,8 @@ struct
     let make { array_type; _ } ~init size =
       C.Expression.array_new M.me array_type size init
 
-    let cell { array_type = _; elem_type = typ } target idx =
-      Cell.{ typ; loc = Array { target; idx } }
+    let cell { array_type; elem_type = typ } target idx =
+      Cell.{ typ; loc = Array { target; array_type; idx } }
   end
 end
 
