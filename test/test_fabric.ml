@@ -1,13 +1,13 @@
 open Core
 open Fabric
 
-let%expect_test "assemble" =
+let%expect_test "compile" =
   let test program =
     let (module Ctx) = Binaryer.context_of_module (compile program) in
     let open Ctx in
     let valid = validate () in
     print_s [%message (valid : bool)];
-    if not valid then print_stack_ir () else interpret ()
+    if not valid then print () else interpret ()
   in
   test "%print_i32 (42)";
   [%expect {|
@@ -18,6 +18,17 @@ let%expect_test "assemble" =
   [%expect {|
     (valid true)
     42 : i32
+    |}];
+  test "let (x, y) = (2, 3) in %print_i32 (x + y)";
+  [%expect {|
+    (valid true)
+    5 : i32
+    |}];
+  test
+    "let ((x,), (a, b, c)) = ((1,), (2, 3, 4)) in %print_i32 (x + (a * b * c))";
+  [%expect {|
+    (valid true)
+    25 : i32
     |}];
   test "let square = (x: int => x * x) in %print_i32 ((square 3) + (square 4))";
   [%expect {|

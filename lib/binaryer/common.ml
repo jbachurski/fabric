@@ -1,3 +1,4 @@
+open Core
 module C = Binaryen_ctypes.Functions
 module T = Binaryen_ctypes.Types
 

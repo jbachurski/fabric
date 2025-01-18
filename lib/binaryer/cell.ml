@@ -23,6 +23,13 @@ module Cell0 = struct
         idx : T.Expression.t;
       }
 
+  type array_t = { array_type : T.HeapType.t; elem_type : T.Type.t }
+
+  type struct_t = {
+    struct_type : T.HeapType.t;
+    fields : (string * T.Type.t) list;
+  }
+
   type t = { typ : typ; loc : loc }
 end
 

@@ -32,11 +32,13 @@ module Type = struct
     | Array of t
   [@@deriving equal, sexp]
 
-  let rec repr : t -> Repr.t = function
+  let repr (_ : t) : Repr.t = Atoms [ Box ]
+
+  let rec __repr : t -> Repr.t = function
     | Any -> Unknown
     | Int -> Atoms [ Int32 ]
     | Float -> Atoms [ Float64 ]
-    | Tuple ts -> Repr.cat (List.map ~f:repr ts)
+    | Tuple ts -> Repr.cat (List.map ~f:__repr ts)
     | Function _ | Array _ -> Atoms [ Box ]
 
   let unit = Tuple []

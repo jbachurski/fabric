@@ -62,4 +62,8 @@ struct
     let args_start, args_len = c_args T.Expression.t args in
     C.Expression.call_indirect M.me name target args_start args_len params
       result
+
+  let call_ref target args result =
+    let args_start, args_len = c_args T.Expression.t args in
+    C.Expression.call_ref M.me target args_start args_len result false
 end

@@ -71,6 +71,11 @@ type field = { t : T.Type.t; packed : T.PackedType.t; mut : bool }
 
 let field ?(packed = Packed.no) ?(mut = false) t = { t; packed; mut }
 
+let function_ params result =
+  Builder.construct_exn (fun builder ->
+      C.Type.Builder.set_function builder (u32_of_int 0) params result)
+  |> unwrap_singleton
+
 let struct_ fields =
   Builder.construct_exn (fun builder ->
       let open Ctypes in

@@ -131,6 +131,11 @@ module Functions (F : Ctypes.FOREIGN) = struct
       let size =
         foreign "TypeBuilderGetSize" (T.TypeBuilder.t @-> returning T.Index.t)
 
+      let set_function =
+        foreign "TypeBuilderSetSignatureType"
+          (T.TypeBuilder.t @-> T.Index.t @-> T.Type.t @-> T.Type.t
+         @-> returning void)
+
       let set_struct =
         foreign "TypeBuilderSetStructType"
           (T.TypeBuilder.t @-> T.Index.t @-> ptr T.Type.t @-> ptr T.PackedType.t
@@ -225,9 +230,18 @@ module Functions (F : Ctypes.FOREIGN) = struct
         (T.Module.t @-> string @-> T.Expression.t @-> ptr T.Expression.t
        @-> T.Index.t @-> T.Type.t @-> T.Type.t @-> returning T.Expression.t)
 
+    let call_ref =
+      foreign "BinaryenCallRef"
+        (T.Module.t @-> T.Expression.t @-> ptr T.Expression.t @-> T.Index.t
+       @-> T.Type.t @-> bool @-> returning T.Expression.t)
+
     let ref_cast =
       foreign "BinaryenRefCast"
         (T.Module.t @-> T.Expression.t @-> T.Type.t @-> returning T.Expression.t)
+
+    let ref_func =
+      foreign "BinaryenRefFunc"
+        (T.Module.t @-> string @-> T.Type.t @-> returning T.Expression.t)
 
     let struct_new =
       foreign "BinaryenStructNew"
@@ -261,6 +275,10 @@ module Functions (F : Ctypes.FOREIGN) = struct
 
     let array_len =
       foreign "BinaryenArrayLen"
+        (T.Module.t @-> T.Expression.t @-> returning T.Expression.t)
+
+    let drop =
+      foreign "BinaryenDrop"
         (T.Module.t @-> T.Expression.t @-> returning T.Expression.t)
 
     let unreachable =

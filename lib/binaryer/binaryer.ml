@@ -5,7 +5,7 @@ module type Context = Binaryer_intf.Context
 
 type expr = T.Expression.t
 
-module Type = Type
+module Cell0 = Cell.Cell0
 
 module Make (M : sig
   val me : T.Module.t
@@ -44,7 +44,10 @@ struct
   let local = Function.local
 
   module Struct = struct
-    type t = { struct_type : T.HeapType.t; fields : (string * T.Type.t) list }
+    type t = Cell0.struct_t = {
+      struct_type : T.HeapType.t;
+      fields : (string * T.Type.t) list;
+    }
 
     let t fields =
       {
@@ -69,7 +72,7 @@ struct
   end
 
   module Array = struct
-    type t = { array_type : T.HeapType.t; elem_type : T.Type.t }
+    type t = Cell0.array_t = { array_type : T.HeapType.t; elem_type : T.Type.t }
 
     let t field = { array_type = Type.array field; elem_type = field.t }
 
@@ -90,3 +93,6 @@ let context () =
   let t = C.Module.create () in
   Gc.Expert.add_finalizer_exn t (fun md -> C.Module.dispose md);
   context_of_module t
+
+module Cell = Cell0
+module Type = Type

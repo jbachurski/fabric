@@ -1,6 +1,6 @@
 (executable
  (public_name fabric)
  (name main)
- (libraries core fabric)
+ (libraries core core_unix.command_unix fabric)
  (preprocess
   (pps ppx_jane)))

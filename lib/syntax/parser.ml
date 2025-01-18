@@ -43,6 +43,16 @@ let%expect_test "parse var" =
   print_s [%sexp (parse "'x" : string option)];
   [%expect {| () |}]
 
+let par expr = special "(" *> expr <* special ")"
+
+let sep_list ~sep expr =
+  let+ es =
+    many1
+      (let+ e = expr and+ () = special sep in
+       e)
+  and+ e = option None (map ~f:Option.some expr) in
+  match e with None -> es | Some e -> es @ [ e ]
+
 let type_ =
   let+ () = keyword "int" in
   Type.Int
@@ -54,11 +64,14 @@ let var =
 let pattern =
   fix (fun pattern ->
       choice
-        [
-          special "(" *> pattern <* special ")";
-          (let+ x = name and+ t = special ":" *> type_ <|> return Type.Any in
-           Expr.Atom (x, t));
-        ])
+        Expr.
+          [
+            par pattern;
+            (let+ ps = par (sep_list ~sep:"," pattern) in
+             List ps);
+            (let+ x = name and+ t = special ":" *> type_ <|> return Type.Any in
+             Atom (x, t));
+          ])
 
 let int =
   let digits = take_while (function '0' .. '9' -> true | _ -> false) in
@@ -116,8 +129,14 @@ let ops expr =
   in
   List.fold_left ~init:e ~f:(fun e' (o, e) -> Op (e', o, e)) es
 
-let par expr = special "(" *> expr <* special ")"
-let atomic expr = par expr <|> var <|> lit
+let unit = par (return (Tuple []))
+
+let tuple1 expr =
+  let+ es = par (sep_list ~sep:"," expr) in
+  Tuple es
+
+let tuple expr = unit <|> tuple1 expr
+let atomic expr = par expr <|> tuple expr <|> var <|> lit
 
 let fun_ expr =
   let+ x = pattern and+ () = special "=>" and+ e = expr in
@@ -183,6 +202,10 @@ let%expect_test "parse expr" =
   [%expect {| (Ok x) |}];
   pparse "x x";
   [%expect {| (Ok (x x)) |}];
+  pparse "() (x,) (x, y) (x, y,) (x, y, z)";
+  [%expect {| (Ok (((((,) (, x)) (, x y)) (, x y)) (, x y z))) |}];
+  pparse "let ((x,), (a, b, c)) = ((1,), (2, 3, 4)) in x + (a * b * c)";
+  [%expect {| (Ok (let ((x) (a b c)) = (, (, 1) (, 2 3 4)) in (+ x (* (* a b) c)))) |}];
   pparse "((x) ((x)))";
   [%expect {| (Ok (x x)) |}];
   pparse "x y z";

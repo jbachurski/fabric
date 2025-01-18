@@ -9,7 +9,7 @@ let size : Source.Repr.t -> int =
   let size_atom : Source.Repr.atom -> int = function
     | Int32 -> 4
     | Float64 -> 8
-    | Box -> 4
+    | Box -> failwith "size of Box"
   in
   function
   | Unknown -> failwith "value/type with unknown representation"
@@ -19,7 +19,7 @@ let repr : Source.Repr.t -> T.Type.t =
   let repr_atom : Source.Repr.atom -> T.Type.t = function
     | Int32 -> Type.int32
     | Float64 -> Type.float64
-    | Box -> Type.int32
+    | Box -> Type.anyref
   in
   function
   | Unknown -> failwith "value/type with unknown representation"
@@ -34,39 +34,69 @@ let source_expr_repr : Source.Expr.t -> T.Type.t =
 let source_pattern_repr : Source.Expr.pattern -> T.Type.t =
   Fn.compose source_type_repr Source.Expr.type_pattern
 
-let assemble_expr (module Ctx : Context) ~top_alloc init_env closure_vars expr =
+type env = (string, Cell.t) List.Assoc.t
+type func = { upvars_t : Cell.struct_t; name : string }
+
+let closure_fun_t (module Ctx : Context) =
+  Type.(function_ (cat [ anyref; structref ]) anyref |> of_heap_type)
+
+let closure_t (module Ctx : Context) =
+  Ctx.Struct.(
+    t
+      Type.
+        [
+          ("fun", field (closure_fun_t (module Ctx)));
+          ("upvars", field structref);
+        ])
+
+let assemble_expr (module Ctx : Context) ~functions =
   let open Ctx in
-  let i32 n = Const.i32 (Int32.of_int_exn n) in
+  let unit_t = Struct.(t []) in
+  let ret_unit e = Control.block [ e; Struct.make unit_t [] ] in
+  let int_t = Struct.(t [ ("value", Type.(field int32)) ]) in
+  let tuple_t k =
+    Struct.t (List.init k ~f:(fun i -> (string_of_int i, Type.(field anyref))))
+  in
+  let closure_fun_t = closure_fun_t (module Ctx) in
+  let closure_t = closure_t (module Ctx) in
+  let wrap_int e = Struct.(make int_t [ ("value", e) ]) in
+  let unwrap_int e = Cell.( ! ) Struct.(cell int_t e "value") in
   let rec go env (expr : Source.Expr.t) : T.Expression.t =
     let open Source.Expr in
-    let alloc n =
-      let last_alloc = local Type.int32 in
-      Cell.
-        ( Control.block
-            [
-              last_alloc := !top_alloc;
-              (top_alloc := Operator.I32.(!top_alloc + i32 n));
-            ],
-          !last_alloc )
-    in
-    let var x = List.Assoc.find_exn env ~equal:String.equal x in
+    let ( !! ) x = Cell.( ! ) (List.Assoc.find_exn env ~equal:String.equal x) in
     match expr with
     | Fun (_, _) -> failwith "cannot assemble first-class functions"
-    | Var (x, _) -> Cell.(!(var x))
-    | Lit n -> i32 n
-    | Let (Atom (x, t), e, e') ->
-        let a = go env e in
-        let v = local (source_type_repr t) in
-        Control.block Cell.[ v := a; go ((x, v) :: env) e' ]
+    | Var (x, _) -> !!x
+    | Lit n -> wrap_int (Const.i32' n)
+    | Let (p, e, e') ->
+        let v = local (source_pattern_repr p) in
+        let rec pat e : Source.Expr.pattern -> (string * Cell0.t * expr) list =
+          function
+          | Atom (x, t) -> [ (x, local (source_type_repr t), e) ]
+          | List ps ->
+              let t = tuple_t (List.length ps) in
+              List.concat_mapi ps ~f:(fun i ->
+                  pat (Struct.cell t e (string_of_int i) |> Cell.( ! )))
+        in
+        let assigns, env_extras =
+          match p with
+          | Atom (x, _) -> ([], [ (x, v) ])
+          | _ ->
+              let cs = pat Cell.(!v) p in
+              ( List.map cs ~f:(fun (_, c, e) -> Cell.(c := e)),
+                List.map cs ~f:(fun (x, c, _) -> (x, c)) )
+        in
+        Control.block
+          ([ Cell.(v := go env e) ] @ assigns @ [ go (env_extras @ env) e' ])
+    | Tuple es ->
+        let t = tuple_t (List.length es) in
+        Struct.make t (List.mapi es ~f:(fun i e -> (string_of_int i, go env e)))
     | Op (e, "", e') ->
         let a = go env e and a' = go env e' in
-        let k = addr ~size:4 ~offset:0 Type.int32 a |> Cell.( ! ) in
-        let fv = Operator.I32.(a + i32 4) in
-        let t, t' = Source.(Type.unwrap_function (Expr.type_expr e)) in
-        (* FIXME: This assumes we only ever call closures so the second argument makes sense *)
-        Function.call_indirect function_table k [ a'; fv ]
-          (Type.cat [ source_type_repr t; Type.int32 ])
-          (source_type_repr t')
+        Function.call_ref
+          (Struct.cell closure_t a "fun" |> Cell.( ! ))
+          [ a'; Struct.cell closure_t a "upvars" |> Cell.( ! ) ]
+          Type.anyref
     | Op (e, o, e') ->
         let op =
           match o with
@@ -76,59 +106,37 @@ let assemble_expr (module Ctx : Context) ~top_alloc init_env closure_vars expr =
           | "/" -> C.Expression.Operator.I32.div_s
           | _ -> raise_s [%message "no op for" (o : string)]
         in
-        Operator.binary op (go env e) (go env e')
-    | Closure (k, xs, _) ->
-        let closure_size =
-          List.map xs ~f:(fun (_, t) -> size (Source.Type.repr t)) |> sum
-        in
-        let allocs, p = alloc (4 + closure_size) in
-        let at i = addr ~size:4 ~offset:(4 * i) Type.int32 p in
-        Control.block
-          Cell.(
-            [ allocs; at 0 := i32 k ]
-            @ List.mapi xs ~f:(fun i (x, _) -> at (i + 1) := !(var x))
-            @ [ p ])
-    | Intrinsic ("print", e) -> Function.call "print" [ go env e ] Type.none
+        Operator.binary op (go env e |> unwrap_int) (go env e' |> unwrap_int)
+        |> wrap_int
+    | Closure (k, fv, _) ->
+        let { upvars_t; name } = List.nth_exn functions k in
+        Struct.make closure_t
+          [
+            ("fun", C.Expression.ref_func me name closure_fun_t);
+            ( "upvars",
+              Struct.make upvars_t (List.map fv ~f:(fun (x, _) -> (x, !!x))) );
+          ]
     | Intrinsic ("print_i32", e) ->
-        Function.call "print_i32" [ go env e ] Type.none
+        Function.call "print_i32"
+          [ Struct.(cell int_t (go env e) "value" |> Cell.( ! )) ]
+          Type.none
+        |> ret_unit
     | Intrinsic (f, _) -> failwith ("unimplemented: Intrinsic " ^ f)
-    | Let _ -> failwith "unimplemented: non-Atom Let"
-    | Tuple _ -> failwith "unimplemented: Tuple"
     | Array _ -> failwith "unimplemented: Array"
     | Idx _ -> failwith "unimplemented: Idx"
     | Shape _ -> failwith "unimplemented: Shape"
   in
-  let init_closure, init_closure_env =
-    if not (List.is_empty closure_vars) then
-      let closure =
-        Cell.(!(List.Assoc.find_exn init_env ~equal:String.equal "__closure"))
-      in
-      let _, closure_init =
-        List.fold_map closure_vars ~init:0 ~f:(fun offset (x, t) ->
-            let v = local (source_type_repr t) in
-            ( offset + size (Source.Type.repr t),
-              (Cell.(v := !(addr ~size:4 ~offset Type.int32 closure)), (x, v))
-            ))
-      in
-      List.unzip closure_init
-    else ([], [])
-  in
-  let e =
-    Control.block (init_closure @ [ go (init_env @ init_closure_env) expr ])
-  in
-  e
+  go
 
 let%expect_test "assemble_expr" =
   let (module Ctx) = context () in
   let open Ctx in
-  Function.make ~name:"f" ~params:Type.none ~result:Type.int32 (fun _ ->
+  feature C.Features.reference_types;
+  feature C.Features.gc;
+  Function.make ~name:"f" ~params:Type.none ~result:Type.anyref (fun _ ->
       "let x = 3 in let y = 4 in (x * x) + (y * y)" |> Syntax.parse_exn
       |> Compiler.propagate_types
-      |> assemble_expr
-           (module Ctx)
-           ~top_alloc:
-             (global "top_alloc" Type.int32 (Const.i32 (Int32.of_int_exn 0)))
-           [] [])
+      |> assemble_expr (module Ctx) ~functions:[] [])
   |> Function.export "f";
   print_s [%message (validate () : bool)];
   print ();
@@ -136,28 +144,60 @@ let%expect_test "assemble_expr" =
     {|
     ("validate ()" true)
     (module
-     (type $0 (func (result i32)))
-     (global $top_alloc (mut i32) (i32.const 0))
+     (type $0 (struct (field i32)))
+     (type $1 (func (result anyref)))
      (export "f" (func $f))
-     (func $f (result i32)
-      (local $0 i32)
-      (local $1 i32)
-      (block (result i32)
-       (local.set $0
+     (func $f (type $1) (result anyref)
+      (local $0 anyref)
+      (local $1 anyref)
+      (local.set $0
+       (struct.new $0
         (i32.const 3)
        )
-       (block (result i32)
-        (local.set $1
+      )
+      (block (result (ref $0))
+       (local.set $1
+        (struct.new $0
          (i32.const 4)
         )
+       )
+       (struct.new $0
         (i32.add
-         (i32.mul
-          (local.get $0)
-          (local.get $0)
+         (struct.get $0 0
+          (ref.cast (ref $0)
+           (struct.new $0
+            (i32.mul
+             (struct.get $0 0
+              (ref.cast (ref $0)
+               (local.get $0)
+              )
+             )
+             (struct.get $0 0
+              (ref.cast (ref $0)
+               (local.get $0)
+              )
+             )
+            )
+           )
+          )
          )
-         (i32.mul
-          (local.get $1)
-          (local.get $1)
+         (struct.get $0 0
+          (ref.cast (ref $0)
+           (struct.new $0
+            (i32.mul
+             (struct.get $0 0
+              (ref.cast (ref $0)
+               (local.get $1)
+              )
+             )
+             (struct.get $0 0
+              (ref.cast (ref $0)
+               (local.get $1)
+              )
+             )
+            )
+           )
+          )
          )
         )
        )
@@ -166,48 +206,63 @@ let%expect_test "assemble_expr" =
     )
     |}]
 
-let assemble_function (module Ctx : Context) ~closure ~top_alloc name (fv, p, e)
-    =
+let assemble_function (module Ctx : Context) ~closure ~functions ?name
+    (fv, p, e) k =
   let open Ctx in
-  let xs = Compiler.pattern_vars p |> List.map ~f:fst in
-  let params = source_pattern_repr p in
-  Function.make ~name
-    ~params:(if closure then Type.cat [ params; Type.int32 ] else params)
-    ~result:(source_expr_repr e)
-    (fun args ->
-      assemble_expr
-        (module Ctx)
-        ~top_alloc
-        (List.zip_exn (if closure then xs @ [ "__closure" ] else xs) args)
-        fv e)
+  match ((p : Source.Expr.pattern), closure) with
+  | Atom (x, t), true ->
+      Function.make ?name
+        ~params:Type.(cat [ source_type_repr t; Type.structref ])
+        ~result:(source_expr_repr e)
+        (fun args ->
+          match args with
+          | [ x_arg; closure_arg ] ->
+              let { upvars_t; _ } = List.nth_exn functions k in
+              let clos =
+                List.map fv ~f:(fun (y, _t) ->
+                    (y, Struct.cell upvars_t Cell.(!closure_arg) y))
+              in
+              assemble_expr (module Ctx) ~functions ((x, x_arg) :: clos) e
+          | _ -> failwith "unreachable")
+  | List [], false ->
+      Function.make ?name ~params:Type.none ~result:Type.none (fun _ ->
+          assemble_expr (module Ctx) ~functions [] e |> C.Expression.drop me)
+  | _ -> raise_s [%message (p : Source.Expr.pattern) (closure : bool)]
 
 let assemble Source.Prog.{ functions; main } : T.Module.t =
   let (module Ctx) = context () in
   let open Ctx in
   feature C.Features.reference_types;
   feature C.Features.gc;
+  (* 
+  (* Allocations *)
   let top_alloc =
     global "top_alloc" Type.int32 (Const.i32 (Int32.of_int_exn 420))
   in
-  (* FIXME: Memory limits >:( *)
   Memory.set ~initial:10 ~maximum:10 ();
-  let funs =
-    List.mapi functions ~f:(fun i (fv, p, e) ->
-        assemble_function
-          (module Ctx)
-          ~closure:true ~top_alloc
-          ("_f" ^ string_of_int i)
-          (fv, p, e))
+  *)
+  let fs = List.length functions in
+  let functions' =
+    List.mapi functions ~f:(fun k (fv, _, _) ->
+        {
+          name = "func" ^ string_of_int k;
+          upvars_t =
+            Struct.t
+              Type.(
+                List.map fv ~f:(fun (x, t) -> (x, field (source_type_repr t))));
+        })
   in
+  List.iteri (List.zip_exn functions functions')
+    ~f:(fun k ((fv, p, e), { name; _ }) ->
+      assemble_function
+        (module Ctx)
+        ~closure:true ~functions:functions' ~name (fv, p, e) k
+      |> ignore);
   let main =
     assemble_function
       (module Ctx)
-      ~closure:false ~top_alloc "main" ([], List [], main)
-  in
-  let () =
-    let n = List.length funs in
-    let tab = Table.make ~initial:n ~maximum:n Type.funcref function_table in
-    Table.add "init_function_table" tab funs |> ignore
+      ~closure:false ~functions:functions' ~name:"main" ([], List [], main)
+      (fs + 1)
   in
   Function.start main;
   Function.export "main" main;
@@ -232,89 +287,104 @@ let%expect_test "assemble" =
     (valid true)
     7 : i32
     (module
-     (type $0 (func (param i32 i32) (result i32)))
-     (type $1 (func))
-     (type $2 (func (param i32)))
-     (import "spectest" "print_i32" (func $print_i32 (type $2) (param i32)))
-     (global $top_alloc (mut i32) (i32.const 420))
-     (memory $__memory__ 10 10)
-     (table $function_table 1 1 funcref)
-     (elem $init_function_table (i32.const 0) $_f0)
+     (type $0 (struct (field i32)))
+     (type $1 (struct (field anyref) (field anyref)))
+     (type $2 (struct))
+     (type $3 (func (param anyref structref) (result anyref)))
+     (type $4 (struct (field (ref $3)) (field structref)))
+     (type $5 (func))
+     (type $6 (func (param i32)))
+     (import "spectest" "print_i32" (func $print_i32 (type $6) (param i32)))
+     (elem declare func $func0)
      (export "main" (func $main))
      (start $main)
-     (func $_f0 (type $0) (param $0 i32) (param $1 i32) (result i32)
-      (local $2 i32)
-      (local $3 i32)
-      (local.set $2
-       (i32.load
-        (local.get $1)
-       )
-      )
-      (local.set $3
-       (i32.load offset=4
-        (local.get $1)
-       )
-      )
-      (i32.add
-       (i32.mul
-        (local.get $0)
-        (local.get $3)
-       )
-       (local.get $2)
-      )
-     )
-     (func $main (type $1)
-      (local $0 i32)
-      (local $1 i32)
-      (local $2 i32)
-      (local $3 i32)
-      (block
-       (local.set $0
-        (i32.const 1)
-       )
-       (block
-        (local.set $1
-         (i32.const 2)
-        )
-        (block
-         (local.set $3
-          (block (result i32)
-           (block
-            (local.set $2
-             (global.get $top_alloc)
+     (func $func0 (type $3) (param $0 anyref) (param $1 structref) (result anyref)
+      (struct.new $0
+       (i32.add
+        (struct.get $0 0
+         (ref.cast (ref $0)
+          (struct.new $0
+           (i32.mul
+            (struct.get $0 0
+             (ref.cast (ref $0)
+              (local.get $0)
+             )
             )
-            (global.set $top_alloc
-             (i32.add
-              (global.get $top_alloc)
-              (i32.const 12)
+            (struct.get $0 0
+             (ref.cast (ref $0)
+              (struct.get $1 1
+               (ref.cast (ref $1)
+                (local.get $1)
+               )
+              )
              )
             )
            )
-           (i32.store
-            (local.get $2)
-            (i32.const 0)
-           )
-           (i32.store offset=4
-            (local.get $2)
-            (local.get $0)
-           )
-           (i32.store offset=8
-            (local.get $2)
-            (local.get $1)
-           )
-           (local.get $2)
           )
          )
-         (call $print_i32
-          (call_indirect $function_table (type $0)
-           (i32.const 3)
-           (i32.add
-            (local.get $3)
-            (i32.const 4)
+        )
+        (struct.get $0 0
+         (ref.cast (ref $0)
+          (struct.get $1 0
+           (ref.cast (ref $1)
+            (local.get $1)
            )
-           (i32.load
-            (local.get $3)
+          )
+         )
+        )
+       )
+      )
+     )
+     (func $main (type $5)
+      (local $0 anyref)
+      (local $1 anyref)
+      (local $2 anyref)
+      (drop
+       (block (result (ref $2))
+        (local.set $0
+         (struct.new $0
+          (i32.const 1)
+         )
+        )
+        (block (result (ref $2))
+         (local.set $1
+          (struct.new $0
+           (i32.const 2)
+          )
+         )
+         (block (result (ref $2))
+          (local.set $2
+           (struct.new $4
+            (ref.func $func0)
+            (struct.new $1
+             (local.get $0)
+             (local.get $1)
+            )
            )
+          )
+          (block (result (ref $2))
+           (call $print_i32
+            (struct.get $0 0
+             (ref.cast (ref $0)
+              (call_ref $3
+               (struct.new $0
+                (i32.const 3)
+               )
+               (struct.get $4 1
+                (ref.cast (ref $4)
+                 (local.get $2)
+                )
+               )
+               (struct.get $4 0
+                (ref.cast (ref $4)
+                 (local.get $2)
+                )
+               )
+              )
+             )
+            )
+           )
+           (struct.new_default $2)
           )
          )
         )

@@ -4,6 +4,8 @@ open Common
 type uint32 = Unsigned.UInt32.t
 type expr = T.Expression.t
 
+module Cell0 = Cell.Cell0
+
 module type Context = sig
   val me : T.Module.t
   val feature : (unit -> T.Features.t) -> unit
@@ -34,7 +36,7 @@ module type Context = sig
   end
 
   module Cell : sig
-    type t = Cell.Cell0.t
+    type t = Cell0.t
 
     val ( ! ) : t -> expr
     val ( := ) : t -> expr -> expr
@@ -57,8 +59,9 @@ module type Context = sig
     val export : string -> T.Function.t -> unit
     val start : T.Function.t -> unit
     val import : string -> string -> string -> typ -> typ -> unit
-    val call_indirect : string -> expr -> expr list -> typ -> typ -> expr
     val call : string -> expr list -> typ -> expr
+    val call_indirect : string -> expr -> expr list -> typ -> typ -> expr
+    val call_ref : expr -> expr list -> typ -> expr
   end
 
   module Table : sig
@@ -94,7 +97,10 @@ module type Context = sig
     size:int -> offset:int -> ?align:int -> ?mem:string -> typ -> expr -> Cell.t
 
   module Struct : sig
-    type t = { struct_type : T.HeapType.t; fields : (string * typ) list }
+    type t = Cell0.struct_t = {
+      struct_type : T.HeapType.t;
+      fields : (string * typ) list;
+    }
 
     val t : (string * Type.field) list -> t
     val make : t -> (string * expr) list -> expr
@@ -102,7 +108,7 @@ module type Context = sig
   end
 
   module Array : sig
-    type t = { array_type : T.HeapType.t; elem_type : typ }
+    type t = Cell0.array_t = { array_type : T.HeapType.t; elem_type : typ }
 
     val t : Type.field -> t
     val make : t -> init:expr -> expr -> expr

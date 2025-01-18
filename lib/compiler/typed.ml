@@ -84,4 +84,12 @@ let%expect_test "strip & propagate" =
      (let (x : int) = (x : int) in
       (let (x : int) = (x : int) in
        (let (x : int) = (x : int) in (let (x : int) = (x : int) in (x : int))))))
+    |}];
+  test
+    "let ((x,), (a, b, c)) = ((1,), (2, 3, 4)) in %print_i32 (x + (a * b * c))";
+  [%expect
+    {|
+    (let ((x) (a b c)) = (, (, 1) (, 2 3 4)) in (print_i32 (+ x (* (* a b) c))))
+    (let (((x : int)) ((a : int) (b : int) (c : int))) = (, (, 1) (, 2 3 4)) in
+     (print_i32 (+ (x : int) (* (* (a : int) (b : int)) (c : int)))))
     |}]
