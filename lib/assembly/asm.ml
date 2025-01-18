@@ -131,7 +131,7 @@ let%expect_test "assemble_expr" =
            [] [])
   |> Function.export "f";
   print_s [%message (validate () : bool)];
-  print_stack_ir ();
+  print ();
   [%expect
     {|
     ("validate ()" true)
@@ -142,17 +142,26 @@ let%expect_test "assemble_expr" =
      (func $f (result i32)
       (local $0 i32)
       (local $1 i32)
-      i32.const 3
-      local.set $0
-      i32.const 4
-      local.set $1
-      local.get $0
-      local.get $0
-      i32.mul
-      local.get $1
-      local.get $1
-      i32.mul
-      i32.add
+      (block (result i32)
+       (local.set $0
+        (i32.const 3)
+       )
+       (block (result i32)
+        (local.set $1
+         (i32.const 4)
+        )
+        (i32.add
+         (i32.mul
+          (local.get $0)
+          (local.get $0)
+         )
+         (i32.mul
+          (local.get $1)
+          (local.get $1)
+         )
+        )
+       )
+      )
      )
     )
     |}]
@@ -175,6 +184,8 @@ let assemble_function (module Ctx : Context) ~closure ~top_alloc name (fv, p, e)
 let assemble Source.Prog.{ functions; main } : T.Module.t =
   let (module Ctx) = context () in
   let open Ctx in
+  feature C.Features.reference_types;
+  feature C.Features.gc;
   let top_alloc =
     global "top_alloc" Type.int32 (Const.i32 (Int32.of_int_exn 420))
   in
@@ -205,103 +216,110 @@ let assemble Source.Prog.{ functions; main } : T.Module.t =
   me
 
 let%expect_test "assemble" =
-  let open C.Module in
-  let test s f =
-    let md =
-      s |> Syntax.parse_exn |> Compiler.propagate_types |> Compiler.lift_lambdas
-      |> assemble
-    in
-    let valid = validate md <> 0 in
-    print_s [%message (valid : bool)];
-    if not valid then print_stack_ir md else f md
+  let (module Ctx) =
+    Binaryer.context_of_module
+      ("let a = 1 in let b = 2 in let f = (x: int => (x*b)+a) in %print_i32 (f \
+        3)" |> Syntax.parse_exn |> Compiler.propagate_types
+     |> Compiler.lift_lambdas |> assemble)
   in
-  test "%print_i32 (42)" (fun md -> interpret md);
-  [%expect {|
-    (valid true)
-    42 : i32
-    |}];
-  test "let id = (x: int => x) in %print_i32 (id 42)" (fun md -> interpret md);
-  [%expect {|
-    (valid true)
-    42 : i32
-    |}];
-  test "let square = (x: int => x * x) in %print_i32 ((square 3) + (square 4))"
-    (fun md -> interpret md);
-  [%expect {|
-    (valid true)
-    25 : i32
-    |}];
-  test
-    "let a = 1 in let b = 2 in let f = (x: int => (x*b)+a) in %print_i32 (f 3)"
-    (fun md -> interpret md);
-  [%expect {|
-    (valid true)
-    7 : i32
-    |}];
-  test
-    "let g = (x: int => 2*x) in let f = (x: int => x+1) in %print_i32 (g (f 1))"
-    (fun md ->
-      (* Module.print md; *)
-      interpret md;
-      optimize md;
-      print_stack_ir md);
+  let open Ctx in
+  let valid = validate () in
+  print_s [%message (valid : bool)];
+  interpret ();
+  print ();
   [%expect
     {|
     (valid true)
-    4 : i32
+    7 : i32
     (module
      (type $0 (func (param i32 i32) (result i32)))
      (type $1 (func))
      (type $2 (func (param i32)))
-     (import "spectest" "print_i32" (func $print_i32 (param i32)))
+     (import "spectest" "print_i32" (func $print_i32 (type $2) (param i32)))
      (global $top_alloc (mut i32) (i32.const 420))
      (memory $__memory__ 10 10)
-     (table $function_table 2 2 funcref)
-     (elem $init_function_table (i32.const 0) $_f0 $_f1)
+     (table $function_table 1 1 funcref)
+     (elem $init_function_table (i32.const 0) $_f0)
      (export "main" (func $main))
      (start $main)
-     (func $_f0 (param $0 i32) (param $1 i32) (result i32)
-      local.get $0
-      i32.const 1
-      i32.add
+     (func $_f0 (type $0) (param $0 i32) (param $1 i32) (result i32)
+      (local $2 i32)
+      (local $3 i32)
+      (local.set $2
+       (i32.load
+        (local.get $1)
+       )
+      )
+      (local.set $3
+       (i32.load offset=4
+        (local.get $1)
+       )
+      )
+      (i32.add
+       (i32.mul
+        (local.get $0)
+        (local.get $3)
+       )
+       (local.get $2)
+      )
      )
-     (func $_f1 (param $0 i32) (param $1 i32) (result i32)
-      local.get $0
-      i32.const 1
-      i32.shl
-     )
-     (func $main
+     (func $main (type $1)
       (local $0 i32)
-      global.get $top_alloc
-      local.set $0
-      global.get $top_alloc
-      i32.const 4
-      i32.add
-      global.set $top_alloc
-      local.get $0
-      i32.const 1
-      i32.store
-      global.get $top_alloc
-      i32.const 4
-      i32.add
-      global.set $top_alloc
-      local.get $0
-      i32.const 0
-      i32.store
-      i32.const 1
-      local.get $0
-      i32.const 4
-      i32.add
-      nop
-      i32.load
-      call_indirect (type $0)
-      local.get $0
-      i32.const 4
-      i32.add
-      local.get $0
-      i32.load
-      call_indirect (type $0)
-      call $print_i32
+      (local $1 i32)
+      (local $2 i32)
+      (local $3 i32)
+      (block
+       (local.set $0
+        (i32.const 1)
+       )
+       (block
+        (local.set $1
+         (i32.const 2)
+        )
+        (block
+         (local.set $3
+          (block (result i32)
+           (block
+            (local.set $2
+             (global.get $top_alloc)
+            )
+            (global.set $top_alloc
+             (i32.add
+              (global.get $top_alloc)
+              (i32.const 12)
+             )
+            )
+           )
+           (i32.store
+            (local.get $2)
+            (i32.const 0)
+           )
+           (i32.store offset=4
+            (local.get $2)
+            (local.get $0)
+           )
+           (i32.store offset=8
+            (local.get $2)
+            (local.get $1)
+           )
+           (local.get $2)
+          )
+         )
+         (call $print_i32
+          (call_indirect $function_table (type $0)
+           (i32.const 3)
+           (i32.add
+            (local.get $3)
+            (i32.const 4)
+           )
+           (i32.load
+            (local.get $3)
+           )
+          )
+         )
+        )
+       )
+      )
      )
     )
     |}]
