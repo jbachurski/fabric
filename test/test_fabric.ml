@@ -14,6 +14,11 @@ let%expect_test "compile" =
     (valid true)
     42 : i32
     |}];
+  test "%print_i32 (2 + (4 - 2))";
+  [%expect {|
+    (valid true)
+    4 : i32
+    |}];
   test "let id = (x: int => x) in %print_i32 (id 42)";
   [%expect {|
     (valid true)
@@ -46,4 +51,12 @@ let%expect_test "compile" =
   [%expect {|
     (valid true)
     4 : i32
+    |}];
+  test
+    "let f = ((x: {foo: int}) => x.foo) in \n\
+     let g = ((x: {bar: int}) => x.bar) in \n\
+     let x = {baz: 0, bar: 3, foo: 4, boo: 1} in %print_i32 ((f x) - (g x))";
+  [%expect {|
+    (valid true)
+    1 : i32
     |}]

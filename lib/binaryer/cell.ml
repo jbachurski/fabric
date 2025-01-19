@@ -5,6 +5,7 @@ module Cell0 = struct
   type loc =
     | Local of { idx : uint32 }
     | Global of { name : string; mut : bool; handle : T.Global.t }
+    | Table of { name : string; idx : T.Expression.t }
     | Address of {
         addr : expr;
         size : uint32;
@@ -40,6 +41,7 @@ struct
   type loc = Cell0.loc =
     | Local of { idx : T.Index.t }
     | Global of { name : string; mut : bool; handle : T.Global.t }
+    | Table of { name : string; idx : T.Expression.t }
     | Address of {
         addr : expr;
         size : uint32;
@@ -80,6 +82,7 @@ struct
     | Global { name; _ } -> C.Expression.global_get M.me name typ
     | Address { addr; size; offset; align; mem } ->
         C.Expression.load M.me size false offset align typ addr mem
+    | Table { name; idx } -> C.Expression.table_get M.me name idx typ
     | Struct { target; struct_type; field_idx } ->
         C.Expression.struct_get M.me field_idx
           (C.Expression.ref_cast M.me target (Type.of_heap_type struct_type))
@@ -95,6 +98,7 @@ struct
     | Global { name; mut = true; _ } -> C.Expression.global_set M.me name expr
     | Global { name; mut = false; _ } ->
         raise_s [%message "global" name "is declared immutable"]
+    | Table { name; idx } -> C.Expression.table_set M.me name idx expr
     | Address { addr; size; offset; align; mem } ->
         C.Expression.store M.me size offset align addr expr typ mem
     | Struct { target; struct_type; field_idx } ->

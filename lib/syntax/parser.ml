@@ -43,19 +43,34 @@ let%expect_test "parse var" =
   print_s [%sexp (parse "'x" : string option)];
   [%expect {| () |}]
 
-let par expr = special "(" *> expr <* special ")"
+let wrap l r expr = special l *> expr <* special r
+let paren expr = wrap "(" ")" expr
+let brack expr = wrap "[" "]" expr
+let brace expr = wrap "{" "}" expr
 
-let sep_list ~sep expr =
+let sep_list' ~sep ~many expr =
   let+ es =
-    many1
+    many
       (let+ e = expr and+ () = special sep in
        e)
   and+ e = option None (map ~f:Option.some expr) in
   match e with None -> es | Some e -> es @ [ e ]
 
+(* requires at least one comma in the list *)
+let sep_list ~sep expr = sep_list' ~sep ~many:many1 expr <|> return []
+let sep_list0 ~sep expr = sep_list' ~sep ~many expr
+
 let type_ =
-  let+ () = keyword "int" in
-  Type.Int
+  fix (fun type_ ->
+      choice
+        [
+          keyword "int" *> return Type.Int;
+          sep_list0 ~sep:","
+            (let+ l = name and+ () = special ":" and+ e = type_ in
+             (l, e))
+          |> brace
+          |> map ~f:(fun fs -> Type.Record fs);
+        ])
 
 let var =
   let+ x = name in
@@ -66,8 +81,8 @@ let pattern =
       choice
         Expr.
           [
-            par pattern;
-            (let+ ps = par (sep_list ~sep:"," pattern) in
+            paren pattern;
+            (let+ ps = paren (sep_list ~sep:"," pattern) in
              List ps);
             (let+ x = name and+ t = special ":" *> type_ <|> return Type.Any in
              Atom (x, t));
@@ -129,35 +144,31 @@ let ops expr =
   in
   List.fold_left ~init:e ~f:(fun e' (o, e) -> Op (e', o, e)) es
 
-let unit = par (return (Tuple []))
-
-let tuple1 expr =
-  let+ es = par (sep_list ~sep:"," expr) in
+let tuple expr =
+  let+ es = paren (sep_list ~sep:"," expr) in
   Tuple es
 
-let tuple expr = unit <|> tuple1 expr
-let atomic expr = par expr <|> tuple expr <|> var <|> lit
+let cons expr =
+  sep_list0 ~sep:","
+    (let+ l = name and+ () = special ":" and+ e = expr in
+     (l, e))
+  |> brace
+  |> map ~f:(fun fs -> Cons fs)
+
+let atomic expr = paren expr <|> tuple expr <|> cons expr <|> var <|> lit
 
 let fun_ expr =
   let+ x = pattern and+ () = special "=>" and+ e = expr in
   Fun (x, e)
 
 let idx expr =
-  let+ e = atomic expr
-  and+ js =
-    many1
-      (let+ () = special "[" and+ j = expr and+ () = special "]" in
-       j)
-  in
+  let+ e = atomic expr and+ js = many1 (brack expr) in
   List.fold_left js ~init:e ~f:(fun e j -> Idx (e, j))
 
 let shape_pattern expr =
-  let+ () = special "["
-  and+ i = name
-  and+ () = special ":"
-  and+ n = expr
-  and+ () = special "]" in
-  (i, n)
+  (let+ i = name and+ () = special ":" and+ n = expr in
+   (i, n))
+  |> brack
 
 let arr expr =
   let+ i, n = shape_pattern expr and+ () = special "=>" and+ e = expr in
@@ -167,10 +178,15 @@ let shape expr =
   let+ () = special "#" and+ e = atomic expr in
   Shape e
 
+let proj expr =
+  let+ e = atomic expr and+ () = special "." and+ l = name in
+  Proj (e, l)
+
 let intrinsic expr =
   let+ () = skip_while Char.is_whitespace
   and+ _ = string "%"
   and+ f = name
+  and+ () = skip_while Char.is_whitespace
   and+ e = atomic expr in
   Intrinsic (f, e)
 
@@ -182,6 +198,7 @@ let expr =
           idx expr;
           arr expr;
           shape expr;
+          proj expr;
           intrinsic expr;
           fun_ expr;
           atomic expr;
@@ -202,10 +219,11 @@ let%expect_test "parse expr" =
   [%expect {| (Ok x) |}];
   pparse "x x";
   [%expect {| (Ok (x x)) |}];
-  pparse "() (x,) (x, y) (x, y,) (x, y, z)";
-  [%expect {| (Ok (((((,) (, x)) (, x y)) (, x y)) (, x y z))) |}];
+  pparse "((), (x,), (x, y), (x, y,), (x, y, z))";
+  [%expect {| (Ok (, (,) (, x) (, x y) (, x y) (, x y z))) |}];
   pparse "let ((x,), (a, b, c)) = ((1,), (2, 3, 4)) in x + (a * b * c)";
-  [%expect {| (Ok (let ((x) (a b c)) = (, (, 1) (, 2 3 4)) in (+ x (* (* a b) c)))) |}];
+  [%expect
+    {| (Ok (let ((x) (a b c)) = (, (, 1) (, 2 3 4)) in (+ x (* (* a b) c)))) |}];
   pparse "((x) ((x)))";
   [%expect {| (Ok (x x)) |}];
   pparse "x y z";
@@ -225,4 +243,26 @@ let%expect_test "parse expr" =
   pparse "[i: #a] => a[i]";
   [%expect {| (Ok ([ i : (# a) ] => ([] a i))) |}];
   pparse "[i: 5] => a[i+1][i+2]";
-  [%expect {| (Ok ([ i : 5 ] => ([] ([] a (+ i 1)) (+ i 2)))) |}]
+  [%expect {| (Ok ([ i : 5 ] => ([] ([] a (+ i 1)) (+ i 2)))) |}];
+  pparse "(%print 1, %print x, %print (2 + 2))";
+  [%expect {| (Ok (, (%print 1) (%print x) (%print (+ 2 2)))) |}];
+  pparse "let o = {} in { foo : 1, bar : 2, }.foo";
+  [%expect {| (Ok (let o = ({ }) in (({ (foo 1) (bar 2) }) . foo))) |}];
+  pparse "let x: {foo: int, bar: int} = {foo: int, bar: int} in x.foo";
+  [%expect
+    {|
+    (Ok
+     (let (x : ({ (foo int) (bar int) })) = ({ (foo int) (bar int) }) in
+      (x . foo)))
+    |}];
+  pparse
+    "let f = ((x: {foo: int, bar: int}) => x.foo) in \n\
+     let g = ((x: {foo: int, bar: int}) => x.bar) in \n\
+     let x = {foo: 4, bar: 3} in %print_i32 (f x - g x)";
+  [%expect
+    {|
+    (Ok
+     (let f = ((x : ({ (foo int) (bar int) })) => (x . foo)) in
+      (let g = ((x : ({ (foo int) (bar int) })) => (x . bar)) in
+       (let x = ({ (foo 4) (bar 3) }) in (%print_i32 ((- (f x) g) x))))))
+    |}]

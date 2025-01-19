@@ -176,6 +176,8 @@ module Functions (F : Ctypes.FOREIGN) = struct
         let mul = !!"MulInt32"
         let div_s = !!"DivSInt32"
         let div_u = !!"DivUInt32"
+        let eq = !!"EqInt32"
+        let ne = !!"NeInt32"
       end
     end
 
@@ -209,6 +211,16 @@ module Functions (F : Ctypes.FOREIGN) = struct
     let global_set =
       foreign "BinaryenGlobalSet"
         (T.Module.t @-> string @-> T.Expression.t @-> returning T.Expression.t)
+
+    let table_get =
+      foreign "BinaryenTableGet"
+        (T.Module.t @-> string @-> T.Expression.t @-> T.Type.t
+       @-> returning T.Expression.t)
+
+    let table_set =
+      foreign "BinaryenTableSet"
+        (T.Module.t @-> string @-> T.Expression.t @-> T.Expression.t
+       @-> returning T.Expression.t)
 
     let load =
       foreign "BinaryenLoad"
@@ -263,6 +275,11 @@ module Functions (F : Ctypes.FOREIGN) = struct
         (T.Module.t @-> T.HeapType.t @-> T.Expression.t @-> T.Expression.t
        @-> returning T.Expression.t)
 
+    let array_new_fixed =
+      foreign "BinaryenArrayNewFixed"
+        (T.Module.t @-> T.HeapType.t @-> ptr T.Expression.t @-> T.Index.t
+       @-> returning T.Expression.t)
+
     let array_get =
       foreign "BinaryenArrayGet"
         (T.Module.t @-> T.Expression.t @-> T.Expression.t @-> T.Type.t @-> bool
@@ -290,6 +307,21 @@ module Functions (F : Ctypes.FOREIGN) = struct
       foreign "BinaryenBlock"
         (T.Module.t @-> string_opt @-> ptr T.Expression.t @-> T.Index.t
        @-> T.Type.t @-> returning T.Expression.t)
+
+    let if_ =
+      foreign "BinaryenIf"
+        (T.Module.t @-> T.Expression.t @-> T.Expression.t @-> T.Expression.opt
+       @-> returning T.Expression.t)
+
+    let loop =
+      foreign "BinaryenLoop"
+        (T.Module.t @-> string_opt @-> T.Expression.t
+       @-> returning T.Expression.t)
+
+    let break =
+      foreign "BinaryenBreak"
+        (T.Module.t @-> string @-> T.Expression.opt @-> T.Expression.opt
+       @-> returning T.Expression.t)
   end
 
   module Table = struct
@@ -300,6 +332,9 @@ module Functions (F : Ctypes.FOREIGN) = struct
 
     let get_name =
       foreign "BinaryenTableGetName" (T.Table.t @-> returning string)
+
+    let get_type =
+      foreign "BinaryenTableGetType" (T.Table.t @-> returning T.Type.t)
 
     let add_active_element_segment =
       foreign "BinaryenAddActiveElementSegment"

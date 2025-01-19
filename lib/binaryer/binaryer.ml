@@ -79,6 +79,10 @@ struct
     let make { array_type; _ } ~init size =
       C.Expression.array_new M.me array_type size init
 
+    let make_of_list { array_type; _ } es =
+      let es_start, es_len = c_args T.Expression.t es in
+      C.Expression.array_new_fixed M.me array_type es_start es_len
+
     let cell { array_type; elem_type = typ } target idx =
       Cell.{ typ; loc = Array { target; array_type; idx } }
   end

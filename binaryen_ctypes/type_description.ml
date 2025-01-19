@@ -33,17 +33,23 @@ module Ref
     (F : Ctypes.TYPE)
     (T : sig
       val name : string
-    end) =
-  Wrap
-    (F)
-    (struct
-      open F
+    end) : sig
+  type t
 
-      type phantom
-      type inner = unit structure ptr
+  val wrap : unit structure ptr -> t
+  val unwrap : t -> unit structure ptr
+  val t : t F.typ
+  val opt : t option F.typ
+end = struct
+  open F
 
-      let t = ptr (structure T.name)
-    end)
+  type t = unit structure ptr
+
+  let wrap t = t
+  let unwrap t = t
+  let t : t typ = ptr (structure T.name)
+  let opt : t option typ = ptr_opt (structure T.name)
+end
 
 module Types (F : Ctypes.TYPE) = struct
   open! F

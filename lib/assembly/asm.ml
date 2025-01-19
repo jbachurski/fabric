@@ -2,7 +2,6 @@ open Core
 open Binaryer
 module Source = Lang.Fabric
 
-let function_table = "function_table"
 let sum = List.fold_left ~init:0 ~f:( + )
 
 let size : Source.Repr.t -> int =
@@ -57,6 +56,16 @@ let assemble_expr (module Ctx : Context) ~functions =
   let tuple_t k =
     Struct.t (List.init k ~f:(fun i -> (string_of_int i, Type.(field anyref))))
   in
+  let record_labels_t = Array.t Type.(field int32) in
+  let record_values_t = Array.t Type.(field anyref) in
+  let record_t =
+    let open Type in
+    Struct.t
+      [
+        ("labels", field (record_labels_t.array_type |> of_heap_type));
+        ("values", field (record_values_t.array_type |> of_heap_type));
+      ]
+  in
   let closure_fun_t = closure_fun_t (module Ctx) in
   let closure_t = closure_t (module Ctx) in
   let wrap_int e = Struct.(make int_t [ ("value", e) ]) in
@@ -91,6 +100,50 @@ let assemble_expr (module Ctx : Context) ~functions =
     | Tuple es ->
         let t = tuple_t (List.length es) in
         Struct.make t (List.mapi es ~f:(fun i e -> (string_of_int i, go env e)))
+    | Cons fs ->
+        Struct.make record_t
+          [
+            ( "labels",
+              List.map fs ~f:(fun (l, _) -> String.hash l |> Const.i32')
+              |> Array.make_of_list record_labels_t );
+            ( "values",
+              List.map fs ~f:(fun (_, e) -> go env e)
+              |> Array.make_of_list record_values_t );
+          ]
+    | Proj (e, l) ->
+        let ty = record_t.struct_type |> Type.of_heap_type in
+        let v = local Type.anyref in
+        let i = local Type.int32 in
+        let target_label = Const.i32' (String.hash l) in
+        let curr_label =
+          Cell.(
+            !(Array.cell record_labels_t !(Struct.cell record_t !v "labels") !i))
+        in
+        let curr_value =
+          Cell.(
+            !(Array.cell record_values_t !(Struct.cell record_t !v "values") !i))
+        in
+        Control.block
+          Cell.
+            [
+              (v := go env e |> fun e -> C.Expression.ref_cast me e ty);
+              i := Const.i32' 0;
+              Control.block ~name:"done"
+                [
+                  Control.loop ~in_:"next"
+                    (Control.block
+                       [
+                         Control.break ~name:"done"
+                           ~cond:
+                             C.Expression.Operator.(
+                               Operator.binary I32.eq curr_label target_label)
+                           ();
+                         (i := Operator.I32.(!i + Const.i32' 1));
+                         Control.break ~name:"next" ();
+                       ]);
+                ];
+              curr_value;
+            ]
     | Op (e, "", e') ->
         let a = go env e and a' = go env e' in
         Function.call_ref

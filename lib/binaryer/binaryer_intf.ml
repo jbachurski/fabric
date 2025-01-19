@@ -44,6 +44,9 @@ module type Context = sig
 
   module Control : sig
     val block : ?name:string -> ?typ:typ -> expr list -> expr
+    val if_ : expr -> expr -> expr option -> expr
+    val loop : ?in_:string -> expr -> expr
+    val break : name:string -> ?cond:expr -> ?value:expr -> unit -> expr
   end
 
   module Function : sig
@@ -66,6 +69,7 @@ module type Context = sig
 
   module Table : sig
     val make : initial:int -> maximum:int -> typ -> string -> T.Table.t
+    val cell : T.Table.t -> expr -> Cell.t
     val add : string -> T.Table.t -> T.Function.t list -> T.Element_segment.t
   end
 
@@ -112,6 +116,7 @@ module type Context = sig
 
     val t : Type.field -> t
     val make : t -> init:expr -> expr -> expr
+    val make_of_list : t -> expr list -> expr
     val cell : t -> expr -> expr -> Cell.t
   end
 end

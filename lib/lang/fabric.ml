@@ -30,6 +30,7 @@ module Type = struct
     | Tuple of t list
     | Function of t * t
     | Array of t
+    | Record of (string * t) list
   [@@deriving equal, sexp]
 
   let repr (_ : t) : Repr.t = Atoms [ Box ]
@@ -39,7 +40,7 @@ module Type = struct
     | Int -> Atoms [ Int32 ]
     | Float -> Atoms [ Float64 ]
     | Tuple ts -> Repr.cat (List.map ~f:__repr ts)
-    | Function _ | Array _ -> Atoms [ Box ]
+    | Function _ | Array _ | Record _ -> Atoms [ Box ]
 
   let unit = Tuple []
 
@@ -52,6 +53,11 @@ module Type = struct
     | Tuple ts -> List (List.map ~f:pretty ts)
     | Function (s, t) -> List [ pretty s; Atom "->"; pretty t ]
     | Array t -> List [ Atom "[]"; pretty t ]
+    | Record fs ->
+        List
+          ([ Atom "{" ]
+          @ List.map fs ~f:(fun (l, t) -> List [ Atom l; pretty t ])
+          @ [ Atom "}" ])
 
   let unwrap_function = function
     | Function (t, t') -> (t, t')
@@ -59,6 +65,16 @@ module Type = struct
 
   let unwrap_array = function
     | Array t -> t
+    | t -> raise_s [%message "not an array" (t : t)]
+
+  let unwrap_record_field t l =
+    match t with
+    | Record fs -> (
+        match List.Assoc.find fs ~equal:String.equal l with
+        | Some t -> t
+        | None ->
+            raise_s
+              [%message "no such field" l "in record" (fs : (string * t) list)])
     | t -> raise_s [%message "not an array" (t : t)]
 end
 
@@ -75,6 +91,8 @@ module Expr = struct
     | Array of string * t * t
     | Idx of t * t
     | Shape of t
+    | Cons of (string * t) list
+    | Proj of t * string
     | Intrinsic of string * t
     | Op of t * string * t
     | Closure of int * (string * Type.t) list * Type.t
@@ -112,7 +130,13 @@ module Expr = struct
           ]
     | Idx (e, e') -> List [ Atom "[]"; pretty e; pretty e' ]
     | Shape e -> List [ Atom "#"; pretty e ]
-    | Intrinsic (f, e) -> List [ Atom f; pretty e ]
+    | Cons fs ->
+        List
+          ([ Atom "{" ]
+          @ List.map fs ~f:(fun (l, t) -> List [ Atom l; pretty t ])
+          @ [ Atom "}" ])
+    | Proj (t, l) -> List [ pretty t; Atom "."; Atom l ]
+    | Intrinsic (f, e) -> List [ Atom ("%" ^ f); pretty e ]
     | Op (e, "", e') -> List [ pretty e; pretty e' ]
     | Op (e, o, e') -> List [ Atom o; pretty e; pretty e' ]
     | Closure (k, xs, t) ->
@@ -134,10 +158,12 @@ module Expr = struct
         | Lit n -> Lit n
         | Let (x, e, e') -> Let (x, go0 e, go x e')
         | Fun (x, e) -> Fun (x, go x e)
-        | Tuple es -> Tuple (List.map ~f:go0 es)
+        | Tuple es -> Tuple (List.map es ~f:go0)
         | Array (i, e, e') -> Array (i, go0 e, go (Atom (i, Int)) e')
         | Idx (e, e') -> Idx (go0 e, go0 e')
         | Shape e -> Shape (go0 e)
+        | Cons fs -> Cons (List.map fs ~f:(fun (l, e) -> (l, go0 e)))
+        | Proj (e, l) -> Proj (go0 e, l)
         | Intrinsic (f, e) -> Intrinsic (f, go0 e)
         | Op (e, o, e') -> Op (go0 e, o, go0 e')
         | Closure (k, xs, t) -> Closure (k, xs, t))
@@ -155,6 +181,9 @@ module Expr = struct
     | Array (i, e, e') -> !!e <|> !!e' <| Atom (i, Int)
     | Idx (e, e') -> !!e <|> !!e'
     | Shape e -> !!e
+    | Cons fs ->
+        List.map fs ~f:(fun (_, e) -> !!e) |> List.fold_left ~init:z ~f:( <|> )
+    | Proj (e, _) -> !!e
     | Intrinsic (_, e) -> !!e
     | Op (e, _o, e') -> !!e <|> !!e'
     | Closure (_k, xs, _t) ->
@@ -181,6 +210,8 @@ module Expr = struct
     | Array (_, _, e) -> Array (type_expr e)
     | Idx (e, _) -> Type.unwrap_array (type_expr e)
     | Shape _ -> Int
+    | Cons fs -> Record (List.map fs ~f:(fun (l, e) -> (l, type_expr e)))
+    | Proj (e, l) -> Type.unwrap_record_field (type_expr e) l
     | Intrinsic ("print", _) -> Type.unit
     | Intrinsic ("print_i32", _) -> Type.unit
     | Intrinsic _ -> Any

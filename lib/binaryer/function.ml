@@ -32,7 +32,7 @@ struct
         (List.mapi (Type.expanded params) ~f:(fun k typ ->
              { typ; loc = Local { idx = u32_of_int k } }))
     in
-    let locals_start, locals_len = c_args T.Type.t ctx.locals in
+    let locals_start, locals_len = c_args T.Type.t (List.rev ctx.locals) in
     let fn =
       C.Function.make M.me name params result locals_start locals_len body
     in

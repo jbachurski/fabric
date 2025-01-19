@@ -15,7 +15,7 @@ let strip =
     | Let (x, e, e') -> Let (strip_pattern x, e, e')
     | e -> e)
 
-let propagate =
+let propagate' =
   Expr.traverse []
     (fun env p -> Free.pat_free p @ env)
     (fun env -> function
@@ -29,6 +29,11 @@ let propagate =
           Let (Expr.type_onto_pattern (Expr.type_expr e) x, e, e')
       | e -> e)
   |> til_fix ~equal:Expr.equal
+
+let propagate e =
+  let e = propagate' e in
+  ignore (Expr.type_expr e);
+  e
 
 let%expect_test "propagate" =
   let test s = s |> Syntax.parse_exn |> propagate |> Expr.pretty |> print_s in
@@ -89,7 +94,7 @@ let%expect_test "strip & propagate" =
     "let ((x,), (a, b, c)) = ((1,), (2, 3, 4)) in %print_i32 (x + (a * b * c))";
   [%expect
     {|
-    (let ((x) (a b c)) = (, (, 1) (, 2 3 4)) in (print_i32 (+ x (* (* a b) c))))
+    (let ((x) (a b c)) = (, (, 1) (, 2 3 4)) in (%print_i32 (+ x (* (* a b) c))))
     (let (((x : int)) ((a : int) (b : int) (c : int))) = (, (, 1) (, 2 3 4)) in
-     (print_i32 (+ (x : int) (* (* (a : int) (b : int)) (c : int)))))
+     (%print_i32 (+ (x : int) (* (* (a : int) (b : int)) (c : int)))))
     |}]
