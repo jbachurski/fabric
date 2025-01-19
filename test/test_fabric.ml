@@ -80,7 +80,7 @@ let%expect_test "compile" =
   test "let a = [i: 10] => i * i in %print_i32 (a[5])";
   [%expect
     {|
-    (let a = ([ i : 10 ] => (* i i)) in (%print_i32 ([] a 5)))
+    (let a = ([ i : 10 ] => (* i i)) in (%print_i32 (a [ 5 ])))
     (valid true)
     25 : i32
     |}];
@@ -88,7 +88,7 @@ let%expect_test "compile" =
   [%expect
     {|
     (let a = ([ i : 5 ] => ([ j : 5 ] => (- i j))) in
-     (%print_i32 ([] ([] a 4) 3)))
+     (%print_i32 ((a [ 4 ]) [ 3 ])))
     (valid true)
     1 : i32
     |}];
@@ -100,7 +100,7 @@ let%expect_test "compile" =
     {|
     (let a = ([ i : 5 ] => ([ j : 5 ] => (- i j))) in
      (let f = ((i : int) => ((j : int) => (+ i j))) in
-      (%print_i32 (* ([] ([] a 4) 2) ((f 4) 2)))))
+      (%print_i32 (* ((a [ 4 ]) [ 2 ]) ((f 4) 2)))))
     (valid true)
     12 : i32
     |}];
@@ -116,4 +116,22 @@ let%expect_test "compile" =
        (%print_i32 (- (f x) (g x))))))
     (valid true)
     1 : i32
+    |}];
+  test
+    "let tab: [][]{sum: int, prod: int} = \n\
+     [i: 5] => [j: 5] => {sum: i + j, prod: i * j} \n\
+     in \n\
+     let fun = i: int => j: int => tab[i][j].sum + tab[i][j].prod + 1 in \n\
+     %print_i32 (fun 2 3)";
+  [%expect
+    {|
+    (let (tab : ([] ([] ({ (sum int) (prod int) })))) =
+     ([ i : 5 ] => ([ j : 5 ] => ({ (sum (+ i j)) (prod (* i j)) }))) in
+     (let fun =
+      ((i : int) =>
+       ((j : int) =>
+        (+ (+ (((tab [ i ]) [ j ]) . sum) (((tab [ i ]) [ j ]) . prod)) 1)))
+      in (%print_i32 ((fun 2) 3))))
+    (valid true)
+    12 : i32
     |}]

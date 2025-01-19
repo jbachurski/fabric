@@ -130,21 +130,22 @@ let assemble_expr (module Ctx : Context) ~functions =
           Cell.(
             !(Array.cell record_values_t !(Struct.cell record_t !v "values") !i))
         in
+        let next = gensym "next" and after = gensym "after" in
         Control.block
           Cell.
             [
               (v := go env e |> fun e -> C.Expression.ref_cast me e ty);
               i := Const.i32' 0;
-              Control.block ~name:"done"
+              Control.block ~name:after
                 [
-                  Control.loop ~in_:"next"
+                  Control.loop ~in_:next
                     (Control.block
                        [
-                         Control.break ~name:"done"
+                         Control.break ~name:after
                            ~cond:Operator.I32.(curr_label = target_label)
                            ();
                          (i := Operator.I32.(!i + Const.i32' 1));
-                         Control.break ~name:"next" ();
+                         Control.break ~name:next ();
                        ]);
                 ];
               curr_value;

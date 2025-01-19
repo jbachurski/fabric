@@ -128,7 +128,7 @@ module Expr = struct
           [
             Atom "["; Atom i; Atom ":"; pretty e; Atom "]"; Atom "=>"; pretty e';
           ]
-    | Idx (e, e') -> List [ Atom "[]"; pretty e; pretty e' ]
+    | Idx (e, e') -> List [ pretty e; Atom "["; pretty e'; Atom "]" ]
     | Shape e -> List [ Atom "#"; pretty e ]
     | Cons fs ->
         List

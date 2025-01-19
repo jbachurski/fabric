@@ -70,6 +70,8 @@ let type_ =
              (l, e))
           |> brace
           |> map ~f:(fun fs -> Type.Record fs);
+          (let+ () = special "[]" and+ t = type_ in
+           Type.Array t);
         ])
 
 let var =
@@ -128,8 +130,7 @@ let let_ expr =
   Let (x, e, e')
 
 let op =
-  take_while (fun c ->
-      Char.(c = '+' || c = '-' || c = '*' || c = '/' || c = '.'))
+  take_while (fun c -> Char.(c = '+' || c = '-' || c = '*' || c = '/'))
   >>| String.strip
 
 let ops expr =
@@ -155,15 +156,17 @@ let cons expr =
   |> brace
   |> map ~f:(fun fs -> Cons fs)
 
-let atomic expr = paren expr <|> tuple expr <|> cons expr <|> var <|> lit
+let idxs pre_expr expr =
+  let+ e = pre_expr and+ js = many (brack expr) in
+  List.fold_left js ~init:e ~f:(fun e j -> Idx (e, j))
+
+let atomic expr =
+  let pre = paren expr <|> tuple expr <|> cons expr <|> var <|> lit in
+  idxs pre expr
 
 let fun_ expr =
   let+ x = pattern and+ () = special "=>" and+ e = expr in
   Fun (x, e)
-
-let idx expr =
-  let+ e = atomic expr and+ js = many1 (brack expr) in
-  List.fold_left js ~init:e ~f:(fun e j -> Idx (e, j))
 
 let shape_pattern expr =
   (let+ i = name and+ () = special ":" and+ n = expr in
@@ -195,7 +198,6 @@ let expr =
       choice
         [
           let_ expr;
-          idx expr;
           arr expr;
           shape expr;
           proj expr;
@@ -241,9 +243,9 @@ let%expect_test "parse expr" =
   pparse "[i: 5] => f i";
   [%expect {| (Ok ([ i : 5 ] => (f i))) |}];
   pparse "[i: #a] => a[i]";
-  [%expect {| (Ok ([ i : (# a) ] => ([] a i))) |}];
+  [%expect {| (Ok ([ i : (# a) ] => (a [ i ]))) |}];
   pparse "[i: 5] => a[i+1][i+2]";
-  [%expect {| (Ok ([ i : 5 ] => ([] ([] a (+ i 1)) (+ i 2)))) |}];
+  [%expect {| (Ok ([ i : 5 ] => ((a [ (+ i 1) ]) [ (+ i 2) ]))) |}];
   pparse "(%print 1, %print x, %print (2 + 2))";
   [%expect {| (Ok (, (%print 1) (%print x) (%print (+ 2 2)))) |}];
   pparse "let o = {} in { foo : 1, bar : 2, }.foo";
@@ -265,4 +267,28 @@ let%expect_test "parse expr" =
      (let f = ((x : ({ (foo int) (bar int) })) => (x . foo)) in
       (let g = ((x : ({ (foo int) (bar int) })) => (x . bar)) in
        (let x = ({ (foo 4) (bar 3) }) in (%print_i32 ((- (f x) g) x))))))
+    |}];
+  pparse
+    "let tab = [i: 5] => [j: 5] => {sum: i + j, prod: i * j} in \n\
+     let fun = i: int => j: int => tab[i][j].sum + tab[i][j].prod + 1 in \n\
+     %print_i32 (fun 2 3)";
+  [%expect
+    {|
+    (Ok
+     (let tab = ([ i : 5 ] => ([ j : 5 ] => ({ (sum (+ i j)) (prod (* i j)) })))
+      in
+      (let fun =
+       ((i : int) =>
+        ((j : int) =>
+         (+ (+ (((tab [ i ]) [ j ]) . sum) (((tab [ i ]) [ j ]) . prod)) 1)))
+       in (%print_i32 ((fun 2) 3)))))
+    |}];
+  pparse
+    "let tab: [][]{sum: int, prod: int} = [i: 5] => [j: 5] => {sum: i + j, \
+     prod: i * j} in ()";
+  [%expect {|
+    (Ok
+     (let (tab : ([] ([] ({ (sum int) (prod int) })))) =
+      ([ i : 5 ] => ([ j : 5 ] => ({ (sum (+ i j)) (prod (* i j)) }))) in
+      (,)))
     |}]
