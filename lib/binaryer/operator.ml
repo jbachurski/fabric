@@ -12,5 +12,11 @@ struct
     let ( - ) = binary C.Expression.Operator.I32.sub
     let ( * ) = binary C.Expression.Operator.I32.mul
     let ( / ) = binary C.Expression.Operator.I32.div_s
+    let ( = ) = binary C.Expression.Operator.I32.eq
+    let ( <> ) = binary C.Expression.Operator.I32.ne
+    let ( < ) = binary C.Expression.Operator.I32.lt
+    let ( <= ) = binary C.Expression.Operator.I32.le
+    let ( > ) = binary C.Expression.Operator.I32.gt
+    let ( >= ) = binary C.Expression.Operator.I32.ge
   end
 end

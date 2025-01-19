@@ -76,7 +76,7 @@ struct
 
     let t field = { array_type = Type.array field; elem_type = field.t }
 
-    let make { array_type; _ } ~init size =
+    let make { array_type; _ } ~size init =
       C.Expression.array_new M.me array_type size init
 
     let make_of_list { array_type; _ } es =

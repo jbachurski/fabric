@@ -56,6 +56,7 @@ let assemble_expr (module Ctx : Context) ~functions =
   let tuple_t k =
     Struct.t (List.init k ~f:(fun i -> (string_of_int i, Type.(field anyref))))
   in
+  let array_t = Array.t Type.(field ~mut:true anyref) in
   let record_labels_t = Array.t Type.(field int32) in
   let record_values_t = Array.t Type.(field anyref) in
   let record_t =
@@ -70,6 +71,12 @@ let assemble_expr (module Ctx : Context) ~functions =
   let closure_t = closure_t (module Ctx) in
   let wrap_int e = Struct.(make int_t [ ("value", e) ]) in
   let unwrap_int e = Cell.( ! ) Struct.(cell int_t e "value") in
+  let gensym =
+    let cnt = ref 0 in
+    fun prefix ->
+      cnt := !cnt + 1;
+      prefix ^ string_of_int !cnt
+  in
   let rec go env (expr : Source.Expr.t) : T.Expression.t =
     let open Source.Expr in
     let ( !! ) x = Cell.( ! ) (List.Assoc.find_exn env ~equal:String.equal x) in
@@ -134,9 +141,7 @@ let assemble_expr (module Ctx : Context) ~functions =
                     (Control.block
                        [
                          Control.break ~name:"done"
-                           ~cond:
-                             C.Expression.Operator.(
-                               Operator.binary I32.eq curr_label target_label)
+                           ~cond:Operator.I32.(curr_label = target_label)
                            ();
                          (i := Operator.I32.(!i + Const.i32' 1));
                          Control.break ~name:"next" ();
@@ -144,6 +149,31 @@ let assemble_expr (module Ctx : Context) ~functions =
                 ];
               curr_value;
             ]
+    | Array (i_, n_, e_) ->
+        let n = local Type.int32 in
+        let i = local (Type.of_heap_type int_t.struct_type) in
+        let a = local (Type.of_heap_type array_t.array_type) in
+        let next = gensym "next" in
+        Control.block
+          Cell.
+            [
+              n := unwrap_int (go env n_);
+              a := Array.make array_t ~size:!n None;
+              i := wrap_int (Const.i32' 0);
+              Control.loop ~in_:next
+                (Control.block
+                   Operator.I32.
+                     [
+                       Array.cell array_t !a (unwrap_int !i)
+                       := go ((i_, i) :: env) e_;
+                       i := wrap_int (unwrap_int !i + Const.i32' 1);
+                       Control.break ~name:next ~cond:(unwrap_int !i < !n) ();
+                     ]);
+              C.Expression.ref_cast me !a (Type.of_heap_type array_t.array_type);
+            ]
+    | Idx (e, e') ->
+        Array.cell array_t (go env e) (go env e' |> unwrap_int) |> Cell.( ! )
+    | Shape _ -> failwith "unimplemented: Shape"
     | Op (e, "", e') ->
         let a = go env e and a' = go env e' in
         Function.call_ref
@@ -175,9 +205,6 @@ let assemble_expr (module Ctx : Context) ~functions =
           Type.none
         |> ret_unit
     | Intrinsic (f, _) -> failwith ("unimplemented: Intrinsic " ^ f)
-    | Array _ -> failwith "unimplemented: Array"
-    | Idx _ -> failwith "unimplemented: Idx"
-    | Shape _ -> failwith "unimplemented: Shape"
   in
   go
 

@@ -8,7 +8,7 @@ let play program =
   print_s [%message (valid : bool)];
   if not valid then print ()
   else (
-    print_stack_ir ();
+    print ();
     interpret ())
 
 open Core

@@ -178,6 +178,10 @@ module Functions (F : Ctypes.FOREIGN) = struct
         let div_u = !!"DivUInt32"
         let eq = !!"EqInt32"
         let ne = !!"NeInt32"
+        let lt = !!"LtSInt32"
+        let le = !!"LeSInt32"
+        let gt = !!"GtSInt32"
+        let ge = !!"GeSInt32"
       end
     end
 
@@ -272,7 +276,7 @@ module Functions (F : Ctypes.FOREIGN) = struct
 
     let array_new =
       foreign "BinaryenArrayNew"
-        (T.Module.t @-> T.HeapType.t @-> T.Expression.t @-> T.Expression.t
+        (T.Module.t @-> T.HeapType.t @-> T.Expression.t @-> T.Expression.opt
        @-> returning T.Expression.t)
 
     let array_new_fixed =

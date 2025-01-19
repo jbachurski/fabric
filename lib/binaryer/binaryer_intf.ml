@@ -32,6 +32,12 @@ module type Context = sig
       val ( - ) : expr -> expr -> expr
       val ( * ) : expr -> expr -> expr
       val ( / ) : expr -> expr -> expr
+      val ( = ) : expr -> expr -> expr
+      val ( <> ) : expr -> expr -> expr
+      val ( < ) : expr -> expr -> expr
+      val ( <= ) : expr -> expr -> expr
+      val ( > ) : expr -> expr -> expr
+      val ( >= ) : expr -> expr -> expr
     end
   end
 
@@ -115,7 +121,7 @@ module type Context = sig
     type t = Cell0.array_t = { array_type : T.HeapType.t; elem_type : typ }
 
     val t : Type.field -> t
-    val make : t -> init:expr -> expr -> expr
+    val make : t -> size:expr -> expr option -> expr
     val make_of_list : t -> expr list -> expr
     val cell : t -> expr -> expr -> Cell.t
   end
