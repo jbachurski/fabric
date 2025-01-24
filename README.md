@@ -10,7 +10,7 @@ First, install the WebAssembly toolchain – [`binaryen`](https://github.com/Web
 brew install binaryen
 ```
 
-Unfortunately, Homebrew does not ship a `pkg-config` file that Dune relies on. One workaround is to create a file `/opt/homebrew/lib/pkgconfig/` with the following contents:
+Unfortunately, Homebrew does not ship a `pkg-config` file that Dune relies on. One workaround is to create a file `/opt/homebrew/lib/pkgconfig/libbinaryen.pc` with the following contents:
 
 ```
 prefix=/opt/homebrew/Cellar/binaryen/121/
