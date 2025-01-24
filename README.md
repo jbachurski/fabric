@@ -37,3 +37,7 @@ opam switch create .
 ```
 
 Now, you should be able to `dune build` and `dune runtest`. To run the compiler, use `dune exec fabric`, which prints a help message.
+
+## Examples
+
+See the [tests](test/test_fabric.ml) for now.
