@@ -4,7 +4,6 @@
  ; ctypes backward compatibility shims warn sometimes; suppress them
  (flags
   (:standard -w -9-27))
- (ocamlopt_flags -cc clang++)
  (ctypes
   (external_library_name libbinaryen)
   (build_flags_resolver (pkg_config))

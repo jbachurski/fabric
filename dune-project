@@ -24,12 +24,11 @@
    (>= 5.0.0))
   dune
   (alcotest :with-test)
-  expect-test
   core
+  core_unix
+  ctypes-foreign
   ppx_jane
-  angstrom
-  binaryen
-  owi))
+  angstrom))
 
 ;  (synopsis "A short synopsis")
 ;  (description "A longer description")

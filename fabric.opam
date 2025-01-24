@@ -7,12 +7,11 @@ depends: [
   "ocaml" {>= "5.0.0"}
   "dune" {>= "3.16"}
   "alcotest" {with-test}
-  "expect-test"
   "core"
+  "core_unix"
+  "ctypes-foreign"
   "ppx_jane"
   "angstrom"
-  "binaryen"
-  "owi"
   "odoc" {with-doc}
 ]
 build: [
