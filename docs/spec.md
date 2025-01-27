@@ -123,11 +123,15 @@ We add the *property judgement* $\Pi; R \vdash e \Rightarrow p$, a property envi
 
 $$ \dfrac{\Pi; R \vdash e \Rightarrow p \quad p\,R\,p'}{\Pi; R \vdash e \Rightarrow p'} $$
 
-The rest is scaffolding:
+We need some scaffolding (subtyping, environment):
 
-$$ \dfrac{\Pi(x) = p}{\Pi; R \vdash x \Rightarrow p} \quad \dfrac{\Pi; R \vdash e \Rightarrow p}{\Pi; R \vdash e \Uparrow p' \Rightarrow p \sqcup p'} \quad
+$$ \dfrac{\Pi; R \vdash e \Rightarrow p \quad p\,\sqsubseteq p'}{\Pi; R \vdash e \Rightarrow p'} \qquad \dfrac{\Pi(x) = p}{\Pi; R \vdash x \Rightarrow p}$$
+
+And bestow the following rules on the available expressions:
+
+$$ \dfrac{\Pi; R \vdash e \Rightarrow p}{\Pi; R \vdash e \Uparrow p' \Rightarrow p \sqcup p'} \quad
 \dfrac{\Pi; R \vdash e \Rightarrow p}{\Pi; R \vdash e \Downarrow p \Rightarrow p} \quad
-\dfrac{\Pi; R, (p', p'') \vdash e \Rightarrow p}{\Pi; R \vdash \mathrm{rule}\,p' \vdash p''\,\mathrm{in}\,e} $$ 
+\dfrac{\Pi; R, (p', p'') \vdash e \Rightarrow p}{\Pi; R \vdash \mathrm{rule}\,p' \vdash p''\,\mathrm{in}\,e} $$
 
 ### Nominal types
 
@@ -135,8 +139,13 @@ $$ \dfrac{\Pi(x) = p}{\Pi; R \vdash x \Rightarrow p} \quad \dfrac{\Pi; R \vdash 
 
 We introduce type abbreviations $t$, and an abbreviation environment $\Lambda$. 
 
-$$ e ::= \cdots \mid \mathrm{abbrev}\,t = \tau\,\mathrm{in}\,e \mid e :\succ \tau \quad \tau ::= \cdots \mid t $$ 
-$$ \mathrm{expand}_\Lambda(t) = \Lambda(t) \quad \dfrac{\Gamma; \Lambda, t: \tau \vdash e : \tau'}{\Gamma; \Lambda \vdash \mathrm{abbrev} \,t = \tau\, \mathrm{in}\, e : \tau'} \quad \dfrac{\Gamma; \Lambda : e : \mathrm{expand}_\Lambda(\tau)}{\Gamma; \Lambda : e :\succ \tau : \tau} $$ 
+$$ e ::= \cdots \mid \mathrm{abbrev}\,t = \tau\,\mathrm{in}\,e \mid e :\succ \tau \mid e : \tau :\succ \tau \qquad \tau ::= \cdots \mid t $$ 
+$$ \mathrm{expand}_\Lambda(t) = \Lambda(t) \qquad \mathrm{expand}_\Lambda(T(\overrightarrow{\tau_i})) = T\left(\overrightarrow{\mathrm{expand}_\Lambda(\tau_i)}\right) $$
+$$ \dfrac{\Gamma; \Lambda, t: \tau \vdash e : \tau'}{\Gamma; \Lambda \vdash \mathrm{abbrev} \,t = \tau\, \mathrm{in}\, e : \tau'} $$
+$$ \dfrac{\Gamma; \Lambda \vdash e : \mathrm{expand}_\Lambda(\tau)}{\Gamma; \Lambda : e :\succ \tau : \tau} \quad
+\dfrac{\Gamma; \Lambda \vdash e : \tau \quad \tau \equiv_{\mathrm{expand}_\Lambda} \tau'}{\Gamma; \Lambda : (e : \tau :\succ \tau') : \tau'} $$
+
+Note that $e :\succ \tau$ is effectively an alias for $e : \tau :\succ \tau$ – abbreviate everything and expand nothing. The idea of the additional annotation is to provide the source type for the abbreviation, allowing the type checker to insert the appropriate constraint, and providing a witness the we can expand/abbreviate along to $\tau’$ (we compare abbreviation-free normal forms under $\mathrm{expand}_\Lambda$).
 
 > $\mathrm{expand}$ propagates functorially down type constructors, replacing known abbreviations with their expansions, and preserving other abbreviation names (→ abstraction).
 > This is tricky, because for polymorphism we need to have an environment for type variables. Let us just assume there is some well-formedness judgement for $\tau$.
