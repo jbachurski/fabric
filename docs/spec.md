@@ -79,7 +79,8 @@ $$ e ::= \cdots \mid \mathrm{case}\,e\,\mathrm{of}\,\overrightarrow{T_i\,x_i \Ri
 
 > Only immutable, single-dimensional arrays for now.
 
-$$ e ::= \cdots \mid [ x : e] \Rightarrow e \mid e[e] \mid \#e \quad \tau ::= \cdots \mid \Box \tau $$ $$ \dfrac{\Gamma,x : \mathrm{int} \vdash e : \tau \quad \Gamma \vdash e' : \mathrm{int}}{\Gamma \vdash [x : e'] \Rightarrow e : \Box \tau} \quad 
+$$ e ::= \cdots \mid [ x : e] \Rightarrow e \mid e[e] \mid \#e \quad \tau ::= \cdots \mid \Box \tau $$
+$$ \dfrac{\Gamma,x : \mathrm{int} \vdash e : \tau \quad \Gamma \vdash e' : \mathrm{int}}{\Gamma \vdash [x : e'] \Rightarrow e : \Box \tau} \quad 
 \dfrac{\Gamma \vdash e : \Box \tau \quad \Gamma \vdash e' : \mathrm{int}}{\Gamma \vdash e : \tau} \quad 
 \dfrac{\Gamma \vdash e : \Box \tau}{\Gamma \vdash \#e : \mathrm{int}} $$ 
 Defining an array of negative size or indexing an array out of bounds is implementation-defined. Arrays initialised with $[x : n] \Rightarrow e$ yield $(\{0/x\}e, \cdots, \{n-1/x\}e)$ indexed from $0$ to $n - 1$.
@@ -111,6 +112,7 @@ $$ \dfrac{\Gamma \vdash e : [\diamond : \tau]}{\Gamma \vdash \mathrm{untag}\,e :
 > This is a simple version of properties, with $p$ a set of property names $\ell$. I believe they could be made more nuanced and closer to usual types $\tau$.
 
 $e\,@\,p$ asserts $p$ about $e$.
+
 $$ e ::= \cdots \mid e \,@\, p \mid \mathrm{rule}\,p\vdash p \,\mathrm{in}\,e  $$ 
 We add the *property judgement* $\Gamma; \Pi \vdash e \therefore p$ and a rule environment $\Pi$.
 
