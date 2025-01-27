@@ -79,10 +79,10 @@ $$ \dfrac{\Gamma \vdash e : [\overrightarrow{T_i\,x_i : \tau_i}] \quad \overrigh
 
 > Only immutable, single-dimensional arrays for now.
 
-$$ e ::= \cdots \mid [ x : e] \Rightarrow e \mid e[e] \mid \#e \quad \tau ::= \cdots \mid \Box \tau $$
+$$ e ::= \cdots \mid [ x : e] \Rightarrow e \mid e[e] \mid \mathrm{shape}\,e \quad \tau ::= \cdots \mid \Box \tau $$
 $$ \dfrac{\Gamma,x : \mathrm{int} \vdash e : \tau \quad \Gamma \vdash e' : \mathrm{int}}{\Gamma \vdash [x : e'] \Rightarrow e : \Box \tau} \quad 
 \dfrac{\Gamma \vdash e : \Box \tau \quad \Gamma \vdash e' : \mathrm{int}}{\Gamma \vdash e : \tau} \quad 
-\dfrac{\Gamma \vdash e : \Box \tau}{\Gamma \vdash \#e : \mathrm{int}} $$ 
+\dfrac{\Gamma \vdash e : \Box \tau}{\Gamma \vdash \mathrm{shape}\,e : \mathrm{int}} $$ 
 
 Defining an array of negative size or indexing an array out of bounds is implementation-defined. Arrays initialised with $[x : n] \Rightarrow e$ yield $(\{0/x\}e, \cdots, \{n-1/x\}e)$ indexed from $0$ to $n - 1$.
 
