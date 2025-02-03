@@ -222,6 +222,18 @@ module Solver = struct
   let sub_complement (t : 'a t) (t' : 'a t) : bound list =
     [ Fail ("not a complement subtype", [ Typ t; Complement (Typ t') ]) ]
 
+  (* Lift back to general form *)
+  let un t =
+    match t with
+    | `Extreme dir -> Extreme dir
+    | `Var x -> Var x
+    | `Typ t -> Typ t
+    | `Combine (dir, t, t') -> Combine (dir, t, t')
+    | `Complement (`Var x) -> Complement (Var x)
+    | `Complement (`Typ t) -> Complement (Typ t)
+    | `Arrow (a, `Var x) -> Arrow (a, Var x)
+    | `Arrow (a, `VarComplement x) -> Arrow (a, Complement (Var x))
+
   (* Simplify to reduce the number of possible cases, 
      mainly for complements and arrows *)
   let rec simp (t : alg) =
@@ -243,20 +255,16 @@ module Solver = struct
     | Arrow (a, Arrow (a', t)) -> simp (Arrow (arrow_compose a a', t))
     | Arrow (a, Combine (dir, t, t')) ->
         `Combine (dir, Arrow (a, t), Arrow (a, t'))
-    | Arrow (_, Complement _) -> failwith "?"
     | Arrow (a, Var x) -> `Arrow (a, `Var x)
     | Arrow (a, Typ t) -> simp (Typ (arrow_apply a t))
+    | Arrow (a, Complement t) -> (
+        match simp t with
+        | `Complement (`Var x) -> `Arrow (a, `VarComplement x)
+        | `Complement (`Typ t) -> simp (Complement (Typ (arrow_apply a t)))
+        | t' -> simp (Arrow (a, un t')))
 
-  let un t =
-    (* Lift back to general form *)
-    match t with
-    | `Extreme dir -> Extreme dir
-    | `Var x -> Var x
-    | `Typ t -> Typ t
-    | `Combine (dir, t, t') -> Combine (dir, t, t')
-    | `Complement (`Var x) -> Complement (Var x)
-    | `Complement (`Typ t) -> Complement (Typ t)
-    | `Arrow (a, `Var x) -> Arrow (a, Var x)
+  let unv x =
+    match x with `Var x -> Var x | `VarComplement x -> Complement (Var x)
 
   let rec atomize ~lower ~upper =
     match (simp lower, simp upper) with
@@ -289,15 +297,15 @@ module Solver = struct
     | `Extreme Top, `Complement t2 -> un t2 *<=* Extreme Bot
     | `Complement t1, `Extreme Bot -> Extreme Top *<=* un t1
     (* Arrows *)
-    | `Extreme dir, `Arrow (_, t2) -> Extreme dir *<=* un t2
-    | `Arrow (_, t1), `Extreme dir -> un t1 *<=* Extreme dir
+    | `Extreme dir, `Arrow (_, t2) -> Extreme dir *<=* unv t2
+    | `Arrow (_, t1), `Extreme dir -> unv t1 *<=* Extreme dir
     (* This case would trigger nondeterministically for both of the latter reductions,
        so we produce both the adjoint-equivalent bounds *)
     | `Arrow (a1, `Var x1), `Arrow (a2, `Var x2) ->
         (Arrow (arrow_compose (arrow_left_adjoint a2) a1, Var x1) *<=* Var x2)
         @ (Var x1 *<=* Arrow (arrow_compose (arrow_right_adjoint a1) a2, Var x2))
-    | t1, `Arrow (a, `Var x) -> Arrow (arrow_left_adjoint a, un t1) *<=* Var x
-    | `Arrow (a, `Var x), t2 -> Var x *<=* Arrow (arrow_right_adjoint a, un t2)
+    | t1, `Arrow (a, x) -> Arrow (arrow_left_adjoint a, un t1) *<=* unv x
+    | `Arrow (a, x), t2 -> unv x *<=* Arrow (arrow_right_adjoint a, un t2)
 
   and ( *<=* ) lower upper = atomize ~lower ~upper
 
