@@ -60,7 +60,7 @@ $$ e ::= \cdots \mid (\overrightarrow{e_i}) \quad \tau ::= \cdots \mid (\overrig
 > We write $\overrightarrow{\sigma}$ for a list across some index $i$.
 
 Record types are partial functions from labels $\ell$ to pairs of types $\tau$ and *frames* $f$, i.e. $\ell \rightharpoonup (\tau, f)$. 
-Frames also form a lattice, and describe the kind of a field. Thus we have a product lattice $(\tau, f)$. The frame can be omitted, leaving it either free or defaulting to $\texttt{present}$.
+Frames also form a lattice, and describe the field. Thus we have a product lattice $(\tau, f)$. The frame can be omitted, leaving it either free or defaulting to $\texttt{present}$.
 
 $$ e ::= \cdots \mid  \{ \overrightarrow{\ell_i: e_i} \} \mid e{.}\ell \qquad \tau ::= \cdots \mid \{ \overrightarrow{\ell_i \triangleright f_i : \tau_i} \} \qquad f ::= \texttt{present} $$
  $$ \dfrac{\Gamma \vdash \overrightarrow{e_i : \tau_i}}{\Gamma \vdash \{ \overrightarrow{\ell_i : e_i} \}  : \overrightarrow{\ell_i : \tau_i}} \qquad \dfrac{\Gamma \vdash e : \{ \ell \triangleright \texttt{present} : \tau \}}{\Gamma \vdash e{.}\ell : \tau } $$
@@ -143,7 +143,7 @@ $$ e ::= \cdots \mid \mathrm{abbrev}\,t = \tau\,\mathrm{in}\,e \mid e :\succ \ta
 $$ \mathrm{expand}_\Lambda(t) = \Lambda(t) \qquad \mathrm{expand}_\Lambda(T(\overrightarrow{\tau_i})) = T\left(\overrightarrow{\mathrm{expand}_\Lambda(\tau_i)}\right) $$
 $$ \dfrac{\Gamma; \Lambda, t: \tau \vdash e : \tau'}{\Gamma; \Lambda \vdash \mathrm{abbrev} \,t = \tau\, \mathrm{in}\, e : \tau'} $$
 $$ \dfrac{\Gamma; \Lambda \vdash e : \mathrm{expand}_\Lambda(\tau)}{\Gamma; \Lambda : e :\succ \tau : \tau} \quad
-\dfrac{\Gamma; \Lambda \vdash e : \tau \quad \tau \equiv_{\mathrm{expand}_\Lambda} \tau'}{\Gamma; \Lambda : (e : \tau :\succ \tau') : \tau'} $$
+\dfrac{\Gamma; \Lambda \vdash e : \tau \quad \tau \equiv_{\mathrm{expand}_\Lambda} \tau'}{\Gamma; \Lambda \vdash (e : \tau :\succ \tau') : \tau'} $$
 
 Note that $e :\succ \tau$ is effectively an alias for $e : \tau :\succ \tau$ – abbreviate everything and expand nothing. The idea of the additional annotation is to provide the source type for the abbreviation, allowing the type checker to insert the appropriate constraint, and providing a witness the we can expand/abbreviate along to $\tau’$ (we compare abbreviation-free normal forms under $\mathrm{expand}_\Lambda$).
 
