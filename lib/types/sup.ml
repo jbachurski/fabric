@@ -67,27 +67,20 @@ module Type = struct
     | Complement of alg
   [@@deriving sexp]
 
-  and arrow = RecordUpdate of alg Field.t Label.Map.t [@@deriving sexp]
+  and arrow = Drop of Label.Set.t [@@deriving sexp]
 
-  let record_update =
-    Map.merge ~f:(fun ~key:_ -> function
-      | `Both (t, _) -> Some t
-      | `Left t | `Right t -> Some t)
+  let arrow_compose (Drop ls) (Drop ls') = Drop (Set.union ls ls')
 
-  let arrow_compose a a' =
-    match (a, a') with
-    | RecordUpdate m, RecordUpdate m' -> RecordUpdate (record_update m m')
-
-  let arrow_apply a t =
-    match (a, t) with
-    | RecordUpdate m, Record (m', c) -> Record (record_update m m', c)
-    | RecordUpdate _, t -> t
+  let arrow_apply (Drop ls) = function
+    | Record (fs, c) ->
+        Record (Map.filter_keys fs ~f:(fun l -> not (Set.mem ls l)), c)
+    | t -> t
 
   let arrow_left_adjoint = function
-    | RecordUpdate _ -> failwith "arrow_left_adjoint: RecordUpdate"
+    | Drop _ -> failwith "arrow_left_adjoint: Drop"
 
   let arrow_right_adjoint = function
-    | RecordUpdate _ -> failwith "arrow_right_adjoint: RecordUpdate"
+    | Drop _ -> failwith "arrow_right_adjoint: Drop"
 end
 
 module Constraint = struct
@@ -375,11 +368,10 @@ module TypeExpr = struct
     | Extend (f, e, e') ->
         let$ r = () in
         let* e = go env e and* e' = go env e' in
-        let* () =
-          e' <: Typ (Record (Label.Map.singleton f Field.Absent, `Unknowns))
-        and* () =
-          r <: Arrow (RecordUpdate (Label.Map.singleton f (Field.Present e)), e')
-        in
+        let field fd = Label.Map.singleton f fd in
+        let* () = e' <: Typ (Record (field Field.Absent, `Unknowns))
+        and* () = r <: Arrow (Drop (Label.Set.singleton f), e')
+        and* () = r <: Typ (Record (field (Field.Present e), `Unknowns)) in
         return r
 end
 
@@ -476,13 +468,15 @@ let%expect_test "" =
          (sup (Typ (Record ((foo Absent)) Unknowns))))
         (Flow (sub (Var $8))
          (sup
-          (Arrow (RecordUpdate ((foo (Present (Typ Int)))))
-           (Typ (Record ((foo (Present (Typ Int)))) Absents)))))))))
+          (Arrow (Drop (foo)) (Typ (Record ((foo (Present (Typ Int)))) Absents)))))
+        (Flow (sub (Var $8))
+         (sup (Typ (Record ((foo (Present (Typ Int)))) Unknowns))))))))
     ("Solver.atomize_constraint c"
      ((Fail decompose
        ((Typ (Record ((foo (Present (Typ Int)))) Absents))
         (Typ (Record ((foo Absent)) Unknowns))))
-      (Upper $8 (Typ (Record ((foo (Present (Typ Int)))) Absents)))))
+      (Upper $8 (Typ (Record () Absents)))
+      (Upper $8 (Typ (Record ((foo (Present (Typ Int)))) Unknowns)))))
     |}];
   test
     TypeExpr.(
@@ -500,12 +494,12 @@ let%expect_test "" =
          (sup (Typ (Record ((foo Absent)) Unknowns))))
         (Flow (sub (Var $9))
          (sup
-          (Arrow (RecordUpdate ((foo (Present (Typ Int)))))
-           (Typ (Record ((bar (Present (Typ Int)))) Absents)))))))))
+          (Arrow (Drop (foo)) (Typ (Record ((bar (Present (Typ Int)))) Absents)))))
+        (Flow (sub (Var $9))
+         (sup (Typ (Record ((foo (Present (Typ Int)))) Unknowns))))))))
     ("Solver.atomize_constraint c"
-     ((Upper $9
-       (Typ
-        (Record ((bar (Present (Typ Int))) (foo (Present (Typ Int)))) Absents)))))
+     ((Upper $9 (Typ (Record ((bar (Present (Typ Int)))) Absents)))
+      (Upper $9 (Typ (Record ((foo (Present (Typ Int)))) Unknowns)))))
     |}];
   test
     TypeExpr.(
@@ -520,9 +514,11 @@ let%expect_test "" =
       (With $11
        (All
         ((Flow (sub (Var $10)) (sup (Typ (Record ((foo Absent)) Unknowns))))
+         (Flow (sub (Var $11)) (sup (Arrow (Drop (foo)) (Var $10))))
          (Flow (sub (Var $11))
-          (sup (Arrow (RecordUpdate ((foo (Present (Typ Int))))) (Var $10)))))))))
+          (sup (Typ (Record ((foo (Present (Typ Int)))) Unknowns)))))))))
     ("Solver.atomize_constraint c"
      ((Upper $10 (Typ (Record ((foo Absent)) Unknowns)))
-      (Upper $11 (Arrow (RecordUpdate ((foo (Present (Typ Int))))) (Var $10)))))
+      (Upper $11 (Arrow (Drop (foo)) (Var $10)))
+      (Upper $11 (Typ (Record ((foo (Present (Typ Int)))) Unknowns)))))
     |}]
