@@ -33,9 +33,49 @@ module Type = struct
   let inv = function Top -> Bot | Bot -> Top
 
   module Field = struct
-    type 't t = Absent | Present of 't [@@deriving sexp]
+    type 'a t = Top | Bot | Absent | Present of 'a [@@deriving sexp]
 
-    let map ~f = function Absent -> Absent | Present t -> Present (f t)
+    let map ~f = function
+      | Top -> Top
+      | Bot -> Bot
+      | Absent -> Absent
+      | Present a -> Present (f a)
+  end
+
+  module Fields : sig
+    type 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
+
+    val t_of_sexp : (Sexp.t -> 'a) -> Sexp.t -> 'a t
+    val sexp_of_t : ('a -> Sexp.t) -> 'a t -> Sexp.t
+    val closed : 'a Field.t Label.Map.t -> 'a t
+    val open_ : 'a Field.t Label.Map.t -> 'a t
+    val map : f:('a -> 'b) -> 'a t -> 'b t
+    val update : 'a t -> Label.t -> 'a Field.t -> 'a t
+    val subs : 'a t -> 'b t -> ('a Field.t * 'b Field.t) Label.Map.t
+  end = struct
+    type 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
+    [@@deriving sexp]
+
+    let un = function `Absent -> Field.Absent | `Bot -> Bot | `Top -> Top
+
+    (* let sexp_of_t t { m; rest } =
+      Sexp.List
+        ((Map.to_alist m
+         |> List.map ~f:(fun (l, f) ->
+                Sexp.List
+                  [ Label.sexp_of_t l; Sexp.Atom ":"; Field.sexp_of_t t f ]))
+        @ [ Sexp.Atom "|"; Field.sexp_of_t t (un rest) ]) *)
+
+    let closed m = { m; rest = `Absent }
+    let open_ m = { m; rest = `Top }
+    let map ~f { m; rest } = { m = Map.map ~f:(Field.map ~f) m; rest }
+    let update { m; rest } key data = { m = Map.set m ~key ~data; rest }
+
+    let subs { m; rest } { m = m'; rest = rest' } =
+      Map.merge m m' ~f:(fun ~key:_ -> function
+        | `Both (t, t') -> Some (t, t')
+        | `Left t -> Some (t, un rest')
+        | `Right t' -> Some (un rest, t'))
   end
 
   type 't t =
@@ -44,7 +84,7 @@ module Type = struct
     | Int
     | Tuple of 't list
     | Function of 't * 't
-    | Record of 't Field.t Label.Map.t * [ `Unknowns | `Absents ]
+    | Record of 't Fields.t
   [@@deriving sexp]
 
   let map ~f = function
@@ -53,7 +93,7 @@ module Type = struct
     | Int -> Int
     | Tuple ts -> Tuple (List.map ~f ts)
     | Function (t, t') -> Function (f t, f t')
-    | Record (fs, c) -> Record (Map.map ~f:(Field.map ~f) fs, c)
+    | Record fs -> Record (Fields.map ~f fs)
 
   type typ = T of typ t [@@deriving sexp]
   type htyp = HVar of Type_var.t | HTyp of htyp t [@@deriving sexp]
@@ -72,8 +112,8 @@ module Type = struct
   let arrow_compose (Drop ls) (Drop ls') = Drop (Set.union ls ls')
 
   let arrow_apply (Drop ls) = function
-    | Record (fs, c) ->
-        Record (Map.filter_keys fs ~f:(fun l -> not (Set.mem ls l)), c)
+    | Record fs ->
+        Record (Set.fold ls ~init:fs ~f:(fun fs l -> Fields.update fs l Top))
     | t -> t
 
   let arrow_left_adjoint = function
@@ -131,7 +171,7 @@ end = struct
       List.fold ts ~init:truth ~f:(fun c (_, c') -> All [ c; c' ]) )
 
   let all_in_field (fd : _ t Type.Field.t) =
-    match fd with Absent -> truth | Present (_, c) -> c
+    match fd with Top | Bot | Absent -> truth | Present (_, c) -> c
 
   let all_in_map m =
     ( Map.map m ~f:(Type.Field.map ~f:(fun (t, _) -> t)),
@@ -168,39 +208,20 @@ module Solver = struct
   let field_decompose ~(lower : alg Field.t) ~(upper : alg Field.t) :
       (alg * alg) list option =
     match (lower, upper) with
-    | Absent, Absent -> Some []
+    | Bot, _ | _, Top | Absent, Absent -> Some []
     | Present t, Present t' -> Some [ (t, t') ]
-    | Absent, Present _ -> None
-    | Present _, Absent -> None
+    | (Absent | Top), Present _ -> None
+    | (Present _ | Top), Absent -> None
+    | (Absent | Present _ | Top), Bot -> None
 
   let decompose ~(lower : alg t) ~(upper : alg t) : (alg * alg) list option =
     match (lower, upper) with
     | _, Top -> Some []
     | Bot, _ -> Some []
-    | Record (fs, c), Record (fs', c') -> (
-        let open Option.Let_syntax in
-        match (c, c') with
-        | `Unknowns, `Absents -> None
-        | `Absents, (`Absents | `Unknowns) ->
-            Map.fold2 fs fs' ~init:(Some []) ~f:(fun ~key:_ ~data acc ->
-                let%bind acc = acc in
-                match data with
-                | `Both (fd, fd') ->
-                    let%bind ts = field_decompose ~lower:fd ~upper:fd' in
-                    Some (acc @ ts)
-                | `Left _ -> Some acc
-                | `Right fd' ->
-                    let%bind ts = field_decompose ~lower:Absent ~upper:fd' in
-                    Some (acc @ ts))
-        | `Unknowns, `Unknowns ->
-            Map.fold2 fs fs' ~init:(Some []) ~f:(fun ~key:_ ~data acc ->
-                let%bind acc = acc in
-                match data with
-                | `Both (fd, fd') ->
-                    Option.bind (field_decompose ~lower:fd ~upper:fd')
-                      ~f:(fun ts -> Some (acc @ ts))
-                | `Left _ -> Some acc
-                | `Right _ -> None))
+    | Record fs, Record fs' ->
+        Fields.subs fs fs' |> Map.to_alist
+        |> List.map ~f:(fun (_, (f, f')) -> field_decompose ~lower:f ~upper:f')
+        |> Option.all |> Option.map ~f:List.concat
     | _ -> None
 
   let is_top (t : 'a t) : bound list =
@@ -294,9 +315,9 @@ module Solver = struct
     | `Arrow (_, t1), `Extreme dir -> unv t1 *<=* Extreme dir
     (* This case would trigger nondeterministically for both of the latter reductions,
        so we produce both the adjoint-equivalent bounds *)
-    | `Arrow (a1, `Var x1), `Arrow (a2, `Var x2) ->
-        (Arrow (arrow_compose (arrow_left_adjoint a2) a1, Var x1) *<=* Var x2)
-        @ (Var x1 *<=* Arrow (arrow_compose (arrow_right_adjoint a1) a2, Var x2))
+    | `Arrow (a1, t1), `Arrow (a2, t2) ->
+        (Arrow (arrow_compose (arrow_left_adjoint a2) a1, unv t1) *<=* unv t2)
+        @ (unv t1 *<=* Arrow (arrow_compose (arrow_right_adjoint a1) a2, unv t2))
     | t1, `Arrow (a, x) -> Arrow (arrow_left_adjoint a, un t1) *<=* unv x
     | `Arrow (a, x), t2 -> unv x *<=* Arrow (arrow_right_adjoint a, un t2)
 
@@ -356,22 +377,23 @@ module TypeExpr = struct
         let* fs =
           all_in_map (Map.map fs ~f:(fun e -> Field.Present (go env e)))
         in
-        return_typ (Record (fs, `Absents))
+        return_typ (Record (Fields.closed fs))
     | Project (e, f) ->
         let$ f_ = () in
         let* e = go env e in
         let* () =
           e
-          <: Typ (Record (Label.Map.singleton f (Field.Present f_), `Unknowns))
+          <: Typ
+               (Record (Label.Map.singleton f (Field.Present f_) |> Fields.open_))
         in
         return f_
     | Extend (f, e, e') ->
         let$ r = () in
         let* e = go env e and* e' = go env e' in
         let field fd = Label.Map.singleton f fd in
-        let* () = e' <: Typ (Record (field Field.Absent, `Unknowns))
+        let* () = e' <: Typ (Record (field Field.Absent |> Fields.open_))
         and* () = r <: Arrow (Drop (Label.Set.singleton f), e')
-        and* () = r <: Typ (Record (field (Field.Present e), `Unknowns)) in
+        and* () = r <: Typ (Record (field (Field.Present e) |> Fields.open_)) in
         return r
 end
 
@@ -402,10 +424,11 @@ let%expect_test "" =
        (sub
         (Typ
          (Record
-          ((bar (Present (Typ (Tuple ((Typ Int) (Typ Int))))))
-           (foo (Present (Typ Int))))
-          Absents)))
-       (sup (Typ (Record ((foo (Present (Var $1)))) Unknowns))))))
+          ((m
+            ((bar (Present (Typ (Tuple ((Typ Int) (Typ Int))))))
+             (foo (Present (Typ Int)))))
+           (rest Absent)))))
+       (sup (Typ (Record ((m ((foo (Present (Var $1))))) (rest Top))))))))
     ("Solver.atomize_constraint c" ((Lower (Typ Int) $1)))
     |}];
   test
@@ -445,12 +468,12 @@ let%expect_test "" =
         (All
          ((With $7
            (Flow (sub (Var $4))
-            (sup (Typ (Record ((foo (Present (Var $7)))) Unknowns)))))
+            (sup (Typ (Record ((m ((foo (Present (Var $7))))) (rest Top)))))))
           (Flow (sub (Var $7))
-           (sup (Typ (Record ((bar (Present (Var $6)))) Unknowns))))))))))
+           (sup (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top))))))))))))
     ("Solver.atomize_constraint c"
-     ((Upper $4 (Typ (Record ((foo (Present (Var $7)))) Unknowns)))
-      (Upper $7 (Typ (Record ((bar (Present (Var $6)))) Unknowns)))))
+     ((Upper $4 (Typ (Record ((m ((foo (Present (Var $7))))) (rest Top)))))
+      (Upper $7 (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top)))))))
     |}];
   test
     TypeExpr.(
@@ -464,19 +487,21 @@ let%expect_test "" =
     (c
      (With $8
       (All
-       ((Flow (sub (Typ (Record ((foo (Present (Typ Int)))) Absents)))
-         (sup (Typ (Record ((foo Absent)) Unknowns))))
+       ((Flow
+         (sub (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent)))))
+         (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
         (Flow (sub (Var $8))
          (sup
-          (Arrow (Drop (foo)) (Typ (Record ((foo (Present (Typ Int)))) Absents)))))
+          (Arrow (Drop (foo))
+           (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent)))))))
         (Flow (sub (Var $8))
-         (sup (Typ (Record ((foo (Present (Typ Int)))) Unknowns))))))))
+         (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
     ("Solver.atomize_constraint c"
      ((Fail decompose
-       ((Typ (Record ((foo (Present (Typ Int)))) Absents))
-        (Typ (Record ((foo Absent)) Unknowns))))
-      (Upper $8 (Typ (Record () Absents)))
-      (Upper $8 (Typ (Record ((foo (Present (Typ Int)))) Unknowns)))))
+       ((Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent))))
+        (Typ (Record ((m ((foo Absent))) (rest Top))))))
+      (Upper $8 (Typ (Record ((m ((foo Top))) (rest Absent)))))
+      (Upper $8 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))
     |}];
   test
     TypeExpr.(
@@ -490,16 +515,19 @@ let%expect_test "" =
     (c
      (With $9
       (All
-       ((Flow (sub (Typ (Record ((bar (Present (Typ Int)))) Absents)))
-         (sup (Typ (Record ((foo Absent)) Unknowns))))
+       ((Flow
+         (sub (Typ (Record ((m ((bar (Present (Typ Int))))) (rest Absent)))))
+         (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
         (Flow (sub (Var $9))
          (sup
-          (Arrow (Drop (foo)) (Typ (Record ((bar (Present (Typ Int)))) Absents)))))
+          (Arrow (Drop (foo))
+           (Typ (Record ((m ((bar (Present (Typ Int))))) (rest Absent)))))))
         (Flow (sub (Var $9))
-         (sup (Typ (Record ((foo (Present (Typ Int)))) Unknowns))))))))
+         (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
     ("Solver.atomize_constraint c"
-     ((Upper $9 (Typ (Record ((bar (Present (Typ Int)))) Absents)))
-      (Upper $9 (Typ (Record ((foo (Present (Typ Int)))) Unknowns)))))
+     ((Upper $9
+       (Typ (Record ((m ((bar (Present (Typ Int))) (foo Top))) (rest Absent)))))
+      (Upper $9 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))
     |}];
   test
     TypeExpr.(
@@ -513,12 +541,13 @@ let%expect_test "" =
      (With $10
       (With $11
        (All
-        ((Flow (sub (Var $10)) (sup (Typ (Record ((foo Absent)) Unknowns))))
+        ((Flow (sub (Var $10))
+          (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
          (Flow (sub (Var $11)) (sup (Arrow (Drop (foo)) (Var $10))))
          (Flow (sub (Var $11))
-          (sup (Typ (Record ((foo (Present (Typ Int)))) Unknowns)))))))))
+          (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))))))
     ("Solver.atomize_constraint c"
-     ((Upper $10 (Typ (Record ((foo Absent)) Unknowns)))
+     ((Upper $10 (Typ (Record ((m ((foo Absent))) (rest Top)))))
       (Upper $11 (Arrow (Drop (foo)) (Var $10)))
-      (Upper $11 (Typ (Record ((foo (Present (Typ Int)))) Unknowns)))))
+      (Upper $11 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))
     |}]
