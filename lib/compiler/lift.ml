@@ -12,7 +12,7 @@ let lift expr =
           let xs = free e |> capturing x in
           let k = List.length !functions in
           functions := (xs, x, e) :: !functions;
-          Closure (k, xs, Function (Expr.type_pattern x, Expr.type_expr e))
+          Closure (k, xs, T (Function (Expr.type_pattern x, Expr.type_expr e)))
       | e -> e)
   in
   let main = go expr in
@@ -22,26 +22,27 @@ let%expect_test "lift" =
   let z =
     Expr.(
       Fun
-        ( Atom ("x", Any),
+        ( Atom ("x", T Top),
           Op
-            ( Var ("f", Any),
+            ( Var ("f", T Top),
               "",
               Fun
-                ( Atom ("v", Any),
+                ( Atom ("v", T Top),
                   Op
-                    (Op (Var ("x", Any), "", Var ("x", Any)), "", Var ("v", Any))
-                ) ) ))
+                    ( Op (Var ("x", T Top), "", Var ("x", T Top)),
+                      "",
+                      Var ("v", T Top) ) ) ) ))
   in
-  print_s (lift (Fun (Atom ("f", Any), Op (z, "", z))) |> Prog.pretty);
+  print_s (lift (Fun (Atom ("f", T Top), Op (z, "", z))) |> Prog.pretty);
   (* these types aren't really good for anything since they are actually infinite *)
   [%expect
     {|
     ((functions
       ((capture (x) params v body ((x x) v))
-       (capture (f) params x body (f (closure 0 ((x Any)) (? -> ?))))
+       (capture (f) params x body (f (closure 0 ((x (T Top))) (? -> ?))))
        (capture (x) params v body ((x x) v))
-       (capture (f) params x body (f (closure 2 ((x Any)) (? -> ?))))
+       (capture (f) params x body (f (closure 2 ((x (T Top))) (? -> ?))))
        (capture () params f body
-        ((closure 3 ((f Any)) (? -> ?)) (closure 1 ((f Any)) (? -> ?))))))
+        ((closure 3 ((f (T Top))) (? -> ?)) (closure 1 ((f (T Top))) (? -> ?))))))
      (main (closure 4 () (? -> (? -> ?)))))
     |}]

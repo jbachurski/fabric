@@ -125,7 +125,7 @@ let%expect_test "compile" =
      %print_i32 (fun 2 3)";
   [%expect
     {|
-    (let (tab : ([] ([] ({ (sum int) (prod int) })))) =
+    (let (tab : ([] ([] ({ (prod int) (sum int) })))) =
      ([ i : 5 ] => ([ j : 5 ] => ({ (sum (+ i j)) (prod (* i j)) }))) in
      (let fun =
       ((i : int) =>

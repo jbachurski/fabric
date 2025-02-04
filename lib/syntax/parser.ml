@@ -1,6 +1,7 @@
 open Angstrom
 open Core
 open Lang.Fabric
+open Lang.Sym
 open Expr
 
 let init_name_char c = Char.(is_alpha c || c = '_')
@@ -59,24 +60,26 @@ let sep_list' ~sep ~many expr =
 (* requires at least one comma in the list *)
 let sep_list ~sep expr = sep_list' ~sep ~many:many1 expr <|> return []
 let sep_list0 ~sep expr = sep_list' ~sep ~many expr
+let prim_type = keyword "int" *> return (Type.T Int)
+
+let record_type type_ =
+  sep_list0 ~sep:","
+    (let+ l = name and+ () = special ":" and+ e = type_ in
+     (Label.of_string l, Type.Field.Present e))
+  |> brace
+  |> map ~f:(fun fs ->
+         Type.T (Record (Label.Map.of_alist_exn fs |> Type.Fields.closed)))
+
+let array_type type_ =
+  let+ () = special "[]" and+ t = type_ in
+  Type.T (Array t)
 
 let type_ =
-  fix (fun type_ ->
-      choice
-        [
-          keyword "int" *> return Type.Int;
-          sep_list0 ~sep:","
-            (let+ l = name and+ () = special ":" and+ e = type_ in
-             (l, e))
-          |> brace
-          |> map ~f:(fun fs -> Type.Record fs);
-          (let+ () = special "[]" and+ t = type_ in
-           Type.Array t);
-        ])
+  fix (fun type_ -> choice [ prim_type; record_type type_; array_type type_ ])
 
 let var =
   let+ x = name in
-  Var (x, Any)
+  Var (x, T Top)
 
 let pattern =
   fix (fun pattern ->
@@ -86,7 +89,8 @@ let pattern =
             paren pattern;
             (let+ ps = paren (sep_list ~sep:"," pattern) in
              List ps);
-            (let+ x = name and+ t = special ":" *> type_ <|> return Type.Any in
+            (let+ x = name
+             and+ t = special ":" *> type_ <|> return (Type.T Top) in
              Atom (x, t));
           ])
 
@@ -254,7 +258,7 @@ let%expect_test "parse expr" =
   [%expect
     {|
     (Ok
-     (let (x : ({ (foo int) (bar int) })) = ({ (foo int) (bar int) }) in
+     (let (x : ({ (bar int) (foo int) })) = ({ (foo int) (bar int) }) in
       (x . foo)))
     |}];
   pparse
@@ -264,8 +268,8 @@ let%expect_test "parse expr" =
   [%expect
     {|
     (Ok
-     (let f = ((x : ({ (foo int) (bar int) })) => (x . foo)) in
-      (let g = ((x : ({ (foo int) (bar int) })) => (x . bar)) in
+     (let f = ((x : ({ (bar int) (foo int) })) => (x . foo)) in
+      (let g = ((x : ({ (bar int) (foo int) })) => (x . bar)) in
        (let x = ({ (foo 4) (bar 3) }) in (%print_i32 ((- (f x) g) x))))))
     |}];
   pparse
@@ -286,9 +290,10 @@ let%expect_test "parse expr" =
   pparse
     "let tab: [][]{sum: int, prod: int} = [i: 5] => [j: 5] => {sum: i + j, \
      prod: i * j} in ()";
-  [%expect {|
+  [%expect
+    {|
     (Ok
-     (let (tab : ([] ([] ({ (sum int) (prod int) })))) =
+     (let (tab : ([] ([] ({ (prod int) (sum int) })))) =
       ([ i : 5 ] => ([ j : 5 ] => ({ (sum (+ i j)) (prod (* i j)) }))) in
       (,)))
     |}]

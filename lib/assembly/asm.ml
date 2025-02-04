@@ -206,6 +206,7 @@ let assemble_expr (module Ctx : Context) ~functions =
           Type.none
         |> ret_unit
     | Intrinsic (f, _) -> failwith ("unimplemented: Intrinsic " ^ f)
+    | Extend _ -> failwith "unimplemented: Extend"
   in
   go
 

@@ -1,4 +1,5 @@
 open Core
+open Sym
 
 module Repr = struct
   type atom = Int32 | Float64 | Box
@@ -23,58 +24,128 @@ module Repr = struct
 end
 
 module Type = struct
-  type t =
-    | Any
+  type dir = Top | Bot [@@deriving equal, sexp]
+
+  let inv = function Top -> Bot | Bot -> Top
+
+  module Field = struct
+    type 'a t = Top | Bot | Absent | Present of 'a [@@deriving equal, sexp]
+
+    let map ~f = function
+      | Top -> Top
+      | Bot -> Bot
+      | Absent -> Absent
+      | Present a -> Present (f a)
+  end
+
+  module Fields : sig
+    type 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
+
+    val equal : ('a -> 'a -> bool) -> 'a t -> 'a t -> bool
+    val t_of_sexp : (Sexp.t -> 'a) -> Sexp.t -> 'a t
+    val sexp_of_t : ('a -> Sexp.t) -> 'a t -> Sexp.t
+    val pretty : ('a -> Sexp.t) -> 'a t -> Sexp.t list
+    val closed : 'a Field.t Label.Map.t -> 'a t
+    val open_ : 'a Field.t Label.Map.t -> 'a t
+    val map : f:('a -> 'b) -> 'a t -> 'b t
+    val update : 'a t -> Label.t -> 'a Field.t -> 'a t
+    val field : 'a t -> Label.t -> 'a Field.t
+    val subs : 'a t -> 'b t -> ('a Field.t * 'b Field.t) Label.Map.t
+  end = struct
+    type 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
+    [@@deriving sexp, equal]
+
+    let un = function `Absent -> Field.Absent | `Bot -> Bot | `Top -> Top
+
+    let pretty a { m; rest } =
+      let open Sexp in
+      (Core.Map.to_alist m
+      |> List.map ~f:(fun (l, f) ->
+             List
+               [
+                 Atom (Label.to_string l);
+                 (match f with
+                 | Present t -> a t
+                 | Bot -> Atom "!"
+                 | Top -> Atom "?"
+                 | Absent -> Atom "_");
+               ]))
+      @
+      match rest with
+      | `Bot -> [ Atom "|"; Atom "!" ]
+      | `Top -> [ Atom "!"; Atom "?" ]
+      | `Absent -> []
+
+    let closed m = { m; rest = `Absent }
+    let open_ m = { m; rest = `Top }
+    let map ~f { m; rest } = { m = Map.map ~f:(Field.map ~f) m; rest }
+    let update { m; rest } key data = { m = Map.set m ~key ~data; rest }
+
+    let field { m; rest } key =
+      Map.find m key |> Option.value ~default:(un rest)
+
+    let subs { m; rest } { m = m'; rest = rest' } =
+      Map.merge m m' ~f:(fun ~key:_ -> function
+        | `Both (t, t') -> Some (t, t')
+        | `Left t -> Some (t, un rest')
+        | `Right t' -> Some (un rest, t'))
+  end
+
+  type 't typ =
+    | Top
+    | Bot
     | Int
     | Float
-    | Tuple of t list
-    | Function of t * t
-    | Array of t
-    | Record of (string * t) list
+    | Tuple of 't list
+    | Function of 't * 't
+    | Array of 't
+    | Record of 't Fields.t
   [@@deriving equal, sexp]
 
+  type t = T of t typ [@@deriving equal, sexp]
+
+  let map ~f = function
+    | Top -> Top
+    | Bot -> Bot
+    | Int -> Int
+    | Float -> Float
+    | Tuple ts -> Tuple (List.map ~f ts)
+    | Function (t, t') -> Function (f t, f t')
+    | Array t -> Array (f t)
+    | Record fs -> Record (Fields.map ~f fs)
+
   let repr (_ : t) : Repr.t = Atoms [ Box ]
-
-  let rec __repr : t -> Repr.t = function
-    | Any -> Unknown
-    | Int -> Atoms [ Int32 ]
-    | Float -> Atoms [ Float64 ]
-    | Tuple ts -> Repr.cat (List.map ~f:__repr ts)
-    | Function _ | Array _ | Record _ -> Atoms [ Box ]
-
   let unit = Tuple []
 
-  let rec pretty =
+  let rec pretty (T t) =
     let open Sexp in
-    function
-    | Any -> Atom "?"
+    match t with
+    | Top -> Atom "?"
+    | Bot -> Atom "!"
     | Int -> Atom "int"
     | Float -> Atom "float"
     | Tuple ts -> List (List.map ~f:pretty ts)
     | Function (s, t) -> List [ pretty s; Atom "->"; pretty t ]
     | Array t -> List [ Atom "[]"; pretty t ]
-    | Record fs ->
-        List
-          ([ Atom "{" ]
-          @ List.map fs ~f:(fun (l, t) -> List [ Atom l; pretty t ])
-          @ [ Atom "}" ])
+    | Record fs -> List ([ Atom "{" ] @ Fields.pretty pretty fs @ [ Atom "}" ])
 
   let unwrap_function = function
-    | Function (t, t') -> (t, t')
+    | T (Function (t, t')) -> (t, t')
     | t -> raise_s [%message "not a function" (t : t)]
 
   let unwrap_array = function
-    | Array t -> t
+    | T (Array t) -> t
     | t -> raise_s [%message "not an array" (t : t)]
 
   let unwrap_record_field t l =
     match t with
-    | Record fs -> (
-        match List.Assoc.find fs ~equal:String.equal l with
-        | Some t -> t
-        | None ->
+    | T (Record fs) -> (
+        match Fields.field fs l with
+        | Present t -> t
+        | _ ->
             raise_s
-              [%message "no such field" l "in record" (fs : (string * t) list)])
+              [%message
+                "no such field" (l : Label.t) "in record" (fs : t Fields.t)])
     | t -> raise_s [%message "not an array" (t : t)]
 end
 
@@ -93,13 +164,14 @@ module Expr = struct
     | Shape of t
     | Cons of (string * t) list
     | Proj of t * string
+    | Extend of string * t * t
     | Intrinsic of string * t
     | Op of t * string * t
     | Closure of int * (string * Type.t) list * Type.t
   [@@deriving equal, sexp]
 
   let pretty_var = function
-    | x, Type.Any -> Sexp.Atom x
+    | x, Type.(T Top) -> Sexp.Atom x
     | x, t -> Sexp.(List [ Atom x; Atom ":"; Type.pretty t ])
 
   let rec pretty_pattern = function
@@ -136,6 +208,11 @@ module Expr = struct
           @ List.map fs ~f:(fun (l, t) -> List [ Atom l; pretty t ])
           @ [ Atom "}" ])
     | Proj (t, l) -> List [ pretty t; Atom "."; Atom l ]
+    | Extend (f, e, e') ->
+        List
+          [
+            Atom "{"; Atom f; Atom "="; pretty e; Atom "|"; pretty e'; Atom "}";
+          ]
     | Intrinsic (f, e) -> List [ Atom ("%" ^ f); pretty e ]
     | Op (e, "", e') -> List [ pretty e; pretty e' ]
     | Op (e, o, e') -> List [ Atom o; pretty e; pretty e' ]
@@ -159,11 +236,12 @@ module Expr = struct
         | Let (x, e, e') -> Let (x, go0 e, go x e')
         | Fun (x, e) -> Fun (x, go x e)
         | Tuple es -> Tuple (List.map es ~f:go0)
-        | Array (i, e, e') -> Array (i, go0 e, go (Atom (i, Int)) e')
+        | Array (i, e, e') -> Array (i, go0 e, go (Atom (i, T Int)) e')
         | Idx (e, e') -> Idx (go0 e, go0 e')
         | Shape e -> Shape (go0 e)
         | Cons fs -> Cons (List.map fs ~f:(fun (l, e) -> (l, go0 e)))
         | Proj (e, l) -> Proj (go0 e, l)
+        | Extend (f, e, e') -> Extend (f, go0 e, go0 e')
         | Intrinsic (f, e) -> Intrinsic (f, go0 e)
         | Op (e, o, e') -> Op (go0 e, o, go0 e')
         | Closure (k, xs, t) -> Closure (k, xs, t))
@@ -178,12 +256,13 @@ module Expr = struct
     | Let (x, e, e') -> !!e <|> (!!e' <| x)
     | Fun (x, e) -> !!e <| x
     | Tuple es -> List.map ~f:( !! ) es |> List.fold_left ~init:z ~f:( <|> )
-    | Array (i, e, e') -> !!e <|> !!e' <| Atom (i, Int)
+    | Array (i, e, e') -> !!e <|> !!e' <| Atom (i, T Int)
     | Idx (e, e') -> !!e <|> !!e'
     | Shape e -> !!e
     | Cons fs ->
         List.map fs ~f:(fun (_, e) -> !!e) |> List.fold_left ~init:z ~f:( <|> )
     | Proj (e, _) -> !!e
+    | Extend (_f, e, e') -> !!e <|> !!e'
     | Intrinsic (_, e) -> !!e
     | Op (e, _o, e') -> !!e <|> !!e'
     | Closure (_k, xs, _t) ->
@@ -192,29 +271,35 @@ module Expr = struct
   let rec type_onto_pattern (t : Type.t) (p : pattern) : pattern =
     match (t, p) with
     | t', Atom (x, _t) -> Atom (x, t')
-    | Tuple ts, List ps -> List (List.map2_exn ~f:type_onto_pattern ts ps)
+    | T (Tuple ts), List ps -> List (List.map2_exn ~f:type_onto_pattern ts ps)
     | _ ->
         raise_s
           [%message "cannot type pattern" (t : Type.t) "with" (p : pattern)]
 
   let rec type_pattern : pattern -> Type.t = function
     | Atom (_, t) -> t
-    | List ps -> Tuple (List.map ~f:type_pattern ps)
+    | List ps -> T (Tuple (List.map ~f:type_pattern ps))
 
   let rec type_expr = function
     | Var (_, t) -> t
-    | Lit _ -> Int
+    | Lit _ -> T Int
     | Let (_, _, e') -> type_expr e'
-    | Fun (x, e) -> Function (type_pattern x, type_expr e)
-    | Tuple es -> Tuple (List.map ~f:type_expr es)
-    | Array (_, _, e) -> Array (type_expr e)
+    | Fun (x, e) -> T (Function (type_pattern x, type_expr e))
+    | Tuple es -> T (Tuple (List.map ~f:type_expr es))
+    | Array (_, _, e) -> T (Array (type_expr e))
     | Idx (e, _) -> Type.unwrap_array (type_expr e)
-    | Shape _ -> Int
-    | Cons fs -> Record (List.map fs ~f:(fun (l, e) -> (l, type_expr e)))
-    | Proj (e, l) -> Type.unwrap_record_field (type_expr e) l
-    | Intrinsic ("print", _) -> Type.unit
-    | Intrinsic ("print_i32", _) -> Type.unit
-    | Intrinsic _ -> Any
+    | Shape _ -> T Int
+    | Cons fs ->
+        T
+          (Record
+             (List.map fs ~f:(fun (l, e) ->
+                  (Label.of_string l, Type.Field.Present (type_expr e)))
+             |> Label.Map.of_alist_exn |> Type.Fields.closed))
+    | Proj (e, l) -> Type.unwrap_record_field (type_expr e) (Label.of_string l)
+    | Extend (_f, _e, _e') -> T Top
+    | Intrinsic ("print", _) -> T Type.unit
+    | Intrinsic ("print_i32", _) -> T Type.unit
+    | Intrinsic _ -> T Top
     | Op (e, _, _) -> type_expr e
     | Closure (_, _, t) -> t
 end

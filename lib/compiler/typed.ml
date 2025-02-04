@@ -6,12 +6,12 @@ let rec til_fix ~equal f x =
   if equal x x' then x else til_fix ~equal f x'
 
 let rec strip_pattern : Expr.pattern -> Expr.pattern = function
-  | Atom (x, _) -> Atom (x, Any)
+  | Atom (x, _) -> Atom (x, T Top)
   | List ps -> List (List.map ~f:strip_pattern ps)
 
 let strip =
   Expr.transform (function
-    | Var (x, _) -> Var (x, Any)
+    | Var (x, _) -> Var (x, T Top)
     | Let (x, e, e') -> Let (strip_pattern x, e, e')
     | e -> e)
 

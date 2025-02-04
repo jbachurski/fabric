@@ -1,25 +1,5 @@
-open! Core
-
-module Type_var =
-  String_id.Make
-    (struct
-      let module_name = "Type_var"
-    end)
-    ()
-
-module Var =
-  String_id.Make
-    (struct
-      let module_name = "Var"
-    end)
-    ()
-
-module Label =
-  String_id.Make
-    (struct
-      let module_name = "Label"
-    end)
-    ()
+open Core
+open Lang.Sym
 
 let next_type_var =
   let cnt = ref 0 in
@@ -28,80 +8,12 @@ let next_type_var =
     Type_var.of_string ("$" ^ string_of_int !cnt)
 
 module Type = struct
-  type dir = Top | Bot [@@deriving sexp]
-
-  let inv = function Top -> Bot | Bot -> Top
-
-  module Field = struct
-    type 'a t = Top | Bot | Absent | Present of 'a [@@deriving sexp]
-
-    let map ~f = function
-      | Top -> Top
-      | Bot -> Bot
-      | Absent -> Absent
-      | Present a -> Present (f a)
-  end
-
-  module Fields : sig
-    type 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
-
-    val t_of_sexp : (Sexp.t -> 'a) -> Sexp.t -> 'a t
-    val sexp_of_t : ('a -> Sexp.t) -> 'a t -> Sexp.t
-    val closed : 'a Field.t Label.Map.t -> 'a t
-    val open_ : 'a Field.t Label.Map.t -> 'a t
-    val map : f:('a -> 'b) -> 'a t -> 'b t
-    val update : 'a t -> Label.t -> 'a Field.t -> 'a t
-    val subs : 'a t -> 'b t -> ('a Field.t * 'b Field.t) Label.Map.t
-  end = struct
-    type 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
-    [@@deriving sexp]
-
-    let un = function `Absent -> Field.Absent | `Bot -> Bot | `Top -> Top
-
-    (* let sexp_of_t t { m; rest } =
-      Sexp.List
-        ((Map.to_alist m
-         |> List.map ~f:(fun (l, f) ->
-                Sexp.List
-                  [ Label.sexp_of_t l; Sexp.Atom ":"; Field.sexp_of_t t f ]))
-        @ [ Sexp.Atom "|"; Field.sexp_of_t t (un rest) ]) *)
-
-    let closed m = { m; rest = `Absent }
-    let open_ m = { m; rest = `Top }
-    let map ~f { m; rest } = { m = Map.map ~f:(Field.map ~f) m; rest }
-    let update { m; rest } key data = { m = Map.set m ~key ~data; rest }
-
-    let subs { m; rest } { m = m'; rest = rest' } =
-      Map.merge m m' ~f:(fun ~key:_ -> function
-        | `Both (t, t') -> Some (t, t')
-        | `Left t -> Some (t, un rest')
-        | `Right t' -> Some (un rest, t'))
-  end
-
-  type 't t =
-    | Top
-    | Bot
-    | Int
-    | Tuple of 't list
-    | Function of 't * 't
-    | Record of 't Fields.t
-  [@@deriving sexp]
-
-  let map ~f = function
-    | Top -> Top
-    | Bot -> Bot
-    | Int -> Int
-    | Tuple ts -> Tuple (List.map ~f ts)
-    | Function (t, t') -> Function (f t, f t')
-    | Record fs -> Record (Fields.map ~f fs)
-
-  type typ = T of typ t [@@deriving sexp]
-  type htyp = HVar of Type_var.t | HTyp of htyp t [@@deriving sexp]
+  include Lang.Fabric.Type
 
   type alg =
     | Extreme of dir
     | Var of Type_var.t
-    | Typ of alg t
+    | Typ of alg typ
     | Arrow of arrow * alg
     | Combine of dir * alg * alg
     | Complement of alg
@@ -109,6 +21,7 @@ module Type = struct
 
   and arrow = Drop of Label.Set.t [@@deriving sexp]
 
+  let rec alg_of_typ (T t) = map ~f:(fun t -> Typ (alg_of_typ t)) t
   let arrow_compose (Drop ls) (Drop ls') = Drop (Set.union ls ls')
 
   let arrow_apply (Drop ls) = function
@@ -201,10 +114,6 @@ module Solver = struct
     | Fail of string * Type.alg list
   [@@deriving sexp]
 
-  let rec alg_of_htyp = function
-    | HTyp t -> Typ (map ~f:alg_of_htyp t)
-    | HVar x -> Var x
-
   let field_decompose ~(lower : alg Field.t) ~(upper : alg Field.t) :
       (alg * alg) list option =
     match (lower, upper) with
@@ -214,7 +123,8 @@ module Solver = struct
     | (Present _ | Top), Absent -> None
     | (Absent | Present _ | Top), Bot -> None
 
-  let decompose ~(lower : alg t) ~(upper : alg t) : (alg * alg) list option =
+  let decompose ~(lower : alg typ) ~(upper : alg typ) : (alg * alg) list option
+      =
     match (lower, upper) with
     | _, Top -> Some []
     | Bot, _ -> Some []
@@ -224,16 +134,16 @@ module Solver = struct
         |> Option.all |> Option.map ~f:List.concat
     | _ -> None
 
-  let is_top (t : 'a t) : bound list =
+  let is_top (t : 'a typ) : bound list =
     match t with Top -> [] | _ -> [ Fail ("not bot", [ Typ t ]) ]
 
-  let is_bot (t : 'a t) : bound list =
+  let is_bot (t : 'a typ) : bound list =
     match t with Bot -> [] | _ -> [ Fail ("not top", [ Typ t ]) ]
 
-  let complement_sub (t : 'a t) (t' : 'a t) : bound list =
+  let complement_sub (t : 'a typ) (t' : 'a typ) : bound list =
     [ Fail ("complement not a subtype", [ Complement (Typ t); Typ t' ]) ]
 
-  let sub_complement (t : 'a t) (t' : 'a t) : bound list =
+  let sub_complement (t : 'a typ) (t' : 'a typ) : bound list =
     [ Fail ("not a complement subtype", [ Typ t; Complement (Typ t') ]) ]
 
   (* Lift back to general form *)
@@ -330,64 +240,49 @@ module Solver = struct
 end
 
 module TypeExpr = struct
-  open Type
-
-  type t =
-    | Var of Var.t
-    | Lit of int
-    | Add of t * t
-    | Let of Var.t * t * t
-    | Tuple of t list
-    | Function of Var.t * t
-    | Apply of t * t
-    | Construct of t Label.Map.t
-    | Project of t * Label.t
-    | Extend of Label.t * t * t
+  open Lang.Fabric.Expr
 
   let rec go (env : Type.alg Var.Map.t) : t -> Type.alg Constrained.t =
     let open Constrained in
-    let return_typ t = return (Typ t) in
+    let open Type in
+    let return_typ t = return (Type.Typ t) in
     function
-    | Var x -> return (Map.find_exn env x)
+    | Var (x, _) -> return (Map.find_exn env (Var.of_string x))
     | Lit _ -> return_typ Int
-    | Add (e, e') ->
-        let* e = go env e in
-        let* e' = go env e' in
-        let* () = e <: Typ Int and* () = e' <: Typ Int in
-        return_typ Int
-    | Let (x, e, e') ->
+    | Let (Atom (x, _), e, e') ->
         let$ x_ = () in
         let* e = go env e in
         let* () = e <: x_ in
-        go (Map.add_exn env ~key:x ~data:x_) e'
+        go (Map.add_exn env ~key:(Var.of_string x) ~data:x_) e'
+    | Fun (Atom (x, _), e) ->
+        let$ x_ = () in
+        let* e = go (Map.add_exn env ~key:(Var.of_string x) ~data:x_) e in
+        return_typ (Function (x_, e))
     | Tuple ts ->
         let* ts = all (List.map ~f:(go env) ts) in
         return_typ (Tuple ts)
-    | Function (x, e) ->
-        let$ x_ = () in
-        let* e = go (Map.add_exn env ~key:x ~data:x_) e in
-        return_typ (Function (x_, e))
-    | Apply (e, e') ->
-        let$ arg = () in
-        let$ res = () in
-        let* e = go env e and* e' = go env e' in
-        let* () = e <: Typ (Function (arg, res)) and* () = e' <: arg in
-        return res
-    | Construct fs ->
+    | Cons fs ->
         let* fs =
-          all_in_map (Map.map fs ~f:(fun e -> Field.Present (go env e)))
+          all_in_map
+            (fs
+            |> List.map ~f:(fun (l, e) -> (Label.of_string l, e))
+            |> Label.Map.of_alist_exn
+            |> Map.map ~f:(fun e -> Field.Present (go env e)))
         in
         return_typ (Record (Fields.closed fs))
-    | Project (e, f) ->
+    | Proj (e, f) ->
         let$ f_ = () in
         let* e = go env e in
         let* () =
           e
           <: Typ
-               (Record (Label.Map.singleton f (Field.Present f_) |> Fields.open_))
+               (Record
+                  (Label.Map.singleton (Label.of_string f) (Field.Present f_)
+                  |> Fields.open_))
         in
         return f_
     | Extend (f, e, e') ->
+        let f = Label.of_string f in
         let$ r = () in
         let* e = go env e and* e' = go env e' in
         let field fd = Label.Map.singleton f fd in
@@ -395,6 +290,25 @@ module TypeExpr = struct
         and* () = r <: Arrow (Drop (Label.Set.singleton f), e')
         and* () = r <: Typ (Record (field (Field.Present e) |> Fields.open_)) in
         return r
+    | Op (e, "", e') ->
+        let$ arg = () in
+        let$ res = () in
+        let* e = go env e and* e' = go env e' in
+        let* () = e <: Typ (Function (arg, res)) and* () = e' <: arg in
+        return res
+    | Op (e, ("+" | "-" | "*" | "/"), e') ->
+        let* e = go env e in
+        let* e' = go env e' in
+        let* () = e <: Typ Int and* () = e' <: Typ Int in
+        return_typ Int
+    | Array _ -> failwith "TypeExpr.go: Array"
+    | Idx _ -> failwith "TypeExpr.go: Idx"
+    | Shape _ -> failwith "TypeExpr.go: Shape"
+    | Intrinsic _ -> failwith "TypeExpr.go: Intrinsic"
+    | Closure _ -> failwith "TypeExpr.go: Closure"
+    | Let _ -> failwith "TypeExpr.go: non-Atom Let"
+    | Fun _ -> failwith "TypeExpr.go: non-Atom Fun"
+    | Op (_, o, _) -> failwith ("TypeExpr.go: Op " ^ o)
 end
 
 let%expect_test "" =
@@ -405,16 +319,7 @@ let%expect_test "" =
     print_s [%message (c : Constraint.t)];
     print_s [%message (Solver.atomize_constraint c : Solver.bound list)]
   in
-  test
-    TypeExpr.(
-      Project
-        ( Construct
-            (Label.Map.of_alist_exn
-               [
-                 (Label.of_string "foo", Lit 5);
-                 (Label.of_string "bar", Tuple [ Lit 1; Lit 2 ]);
-               ]),
-          Label.of_string "foo" ));
+  test (Proj (Cons [ ("foo", Lit 5); ("bar", Tuple [ Lit 1; Lit 2 ]) ], "foo"));
   [%expect
     {|
     (t (Var $1))
@@ -432,12 +337,10 @@ let%expect_test "" =
     ("Solver.atomize_constraint c" ((Lower (Typ Int) $1)))
     |}];
   test
-    TypeExpr.(
-      Function
-        ( Var.of_string "x",
-          Function
-            ( Var.of_string "y",
-              Add (Var (Var.of_string "x"), Var (Var.of_string "y")) ) ));
+    (Fun
+       ( Atom ("x", T Top),
+         Fun (Atom ("y", T Top), Op (Var ("x", T Top), "+", Var ("y", T Top)))
+       ));
   [%expect
     {|
     (t (Typ (Function (Var $2) (Typ (Function (Var $3) (Typ Int))))))
@@ -450,14 +353,10 @@ let%expect_test "" =
     ("Solver.atomize_constraint c" ((Upper $2 (Typ Int)) (Upper $3 (Typ Int))))
     |}];
   test
-    TypeExpr.(
-      Function
-        ( Var.of_string "x",
-          Function
-            ( Var.of_string "y",
-              Project
-                ( Project (Var (Var.of_string "x"), Label.of_string "foo"),
-                  Label.of_string "bar" ) ) ));
+    (Fun
+       ( Atom ("x", T Top),
+         Fun (Atom ("y", T Top), Proj (Proj (Var ("x", T Top), "foo"), "bar"))
+       ));
   [%expect
     {|
     (t (Typ (Function (Var $4) (Typ (Function (Var $5) (Var $6))))))
@@ -475,12 +374,7 @@ let%expect_test "" =
      ((Upper $4 (Typ (Record ((m ((foo (Present (Var $7))))) (rest Top)))))
       (Upper $7 (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top)))))))
     |}];
-  test
-    TypeExpr.(
-      Extend
-        ( Label.of_string "foo",
-          Lit 0,
-          Construct (Label.Map.singleton (Label.of_string "foo") (Lit 1)) ));
+  test (Extend ("foo", Lit 0, Cons [ ("foo", Lit 1) ]));
   [%expect
     {|
     (t (Var $8))
@@ -503,12 +397,7 @@ let%expect_test "" =
       (Upper $8 (Typ (Record ((m ((foo Top))) (rest Absent)))))
       (Upper $8 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))
     |}];
-  test
-    TypeExpr.(
-      Extend
-        ( Label.of_string "foo",
-          Lit 0,
-          Construct (Label.Map.singleton (Label.of_string "bar") (Lit 1)) ));
+  test (Extend ("foo", Lit 0, Cons [ ("bar", Lit 1) ]));
   [%expect
     {|
     (t (Var $9))
@@ -529,11 +418,7 @@ let%expect_test "" =
        (Typ (Record ((m ((bar (Present (Typ Int))) (foo Top))) (rest Absent)))))
       (Upper $9 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))
     |}];
-  test
-    TypeExpr.(
-      Function
-        ( Var.of_string "x",
-          Extend (Label.of_string "foo", Lit 0, Var (Var.of_string "x")) ));
+  test (Fun (Atom ("x", T Top), Extend ("foo", Lit 0, Var ("x", T Top))));
   [%expect
     {|
     (t (Typ (Function (Var $10) (Var $11))))

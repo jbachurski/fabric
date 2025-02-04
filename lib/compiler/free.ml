@@ -18,26 +18,33 @@ let free =
 let%expect_test "free" =
   print_s
     [%sexp
-      (free (Let (Atom ("x", Int), Var ("y", Int), Var ("x", Int)))
+      (free (Let (Atom ("x", T Int), Var ("y", T Int), Var ("x", T Int)))
         : (string * Type.t) list)];
-  [%expect {| ((y Int)) |}];
+  [%expect {| ((y (T Int))) |}];
   print_s
     [%sexp
-      (free (Op (Var ("f", Any), "", Var ("f", Any))) : (string * Type.t) list)];
-  [%expect {| ((f Any)) |}];
+      (free (Op (Var ("f", T Top), "", Var ("f", T Top)))
+        : (string * Type.t) list)];
+  [%expect {| ((f (T Top))) |}];
   print_s
     [%sexp
-      (free (Let (Atom ("x", Int), Var ("x", Int), Var ("y", Int)))
+      (free (Let (Atom ("x", T Int), Var ("x", T Int), Var ("y", T Int)))
         : (string * Type.t) list)];
-  [%expect {| ((x Int) (y Int)) |}];
+  [%expect {| ((x (T Int)) (y (T Int))) |}];
   print_s
     [%sexp
       (free
          (Op
-            ( Var ("a", Int),
+            ( Var ("a", T Int),
               "!",
               Fun
-                ( List [ Atom ("x", Function (Int, Int)); Atom ("y", Int) ],
-                  Op (Var ("x", Function (Int, Int)), "", Var ("y", Int)) ) ))
+                ( List
+                    [
+                      Atom ("x", T (Function (T Int, T Int))); Atom ("y", T Int);
+                    ],
+                  Op
+                    ( Var ("x", T (Function (T Int, T Int))),
+                      "",
+                      Var ("y", T Int) ) ) ))
         : (string * Type.t) list)];
-  [%expect {| ((a Int)) |}]
+  [%expect {| ((a (T Int))) |}]
