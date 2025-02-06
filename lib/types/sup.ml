@@ -19,6 +19,8 @@ module type TypeSystem = sig
   val decompose : ('a, 'a typ * 'a typ) massage
   val is_top : ('a, 'a typ) massage
   val is_bot : ('a, 'a typ) massage
+  val top : 'a typ
+  val bot : 'a typ
   val join : 'a typ -> 'a typ -> 'a typ
   val meet : 'a typ -> 'a typ -> 'a typ
 
@@ -91,8 +93,20 @@ module FabricTypeSystem :
         let t = sexp_of_typ sexp t in
         error_s [%message "Expected bottom type" (t : Sexp.t)]
 
-  let join (_ : 'a typ) (_ : 'a typ) : 'a typ = failwith "unimplemented: join"
-  let meet (_ : 'a typ) (_ : 'a typ) : 'a typ = failwith "unimplemented: meet"
+  let top = Top
+  let bot = Bot
+
+  let join (t : 'a typ) (t' : 'a typ) : 'a typ =
+    match (t, t') with
+    | Top, _ | _, Top -> Top
+    | Bot, t | t, Bot -> t
+    | _ -> Top
+
+  let meet (t : 'a typ) (t' : 'a typ) : 'a typ =
+    match (t, t') with
+    | Bot, _ | _, Bot -> Bot
+    | Top, t | t, Top -> t
+    | _ -> Bot
 
   module Arrow = struct
     open Lang.Fabric.Type
@@ -135,28 +149,104 @@ module Type (M : TypeSystem) = struct
       module Set = Set.Make (T)
     end
 
-    type clause = { vars : Var.Set.t; typ : (bool * t M.typ) option }
+    type clause = { vars : Var.Set.t; pos_typ : t M.typ; neg_typ : t M.typ }
     and t = clause list [@@deriving sexp, equal, compare]
 
     let rec simple t : t =
       [
         {
           vars = Var.Set.empty;
-          typ = Some (false, M.map ~f:(fun t -> simple t) (M.unwrap t));
+          pos_typ = M.map ~f:(fun t -> simple t) (M.unwrap t);
+          neg_typ = M.bot;
         };
       ]
 
+    let bot_clause = { vars = Var.Set.empty; pos_typ = M.bot; neg_typ = M.top }
+    let top_clause = { vars = Var.Set.empty; pos_typ = M.top; neg_typ = M.bot }
     let bot : t = []
-    let top : t = [ { vars = Var.Set.empty; typ = None } ]
-    let typ t : t = [ { vars = Var.Set.empty; typ = Some t } ]
-    let var x = [ { vars = Var.Set.singleton (Var.var x); typ = None } ]
+    let top : t = [ top_clause ]
+    let typ typ : t = [ { top_clause with pos_typ = typ } ]
+    let var x = [ { top_clause with vars = Var.Set.singleton (Var.var x) } ]
+
+    let must_be_top ty =
+      match M.is_top (Fn.const (Sexp.Atom "")) ty with
+      | Ok [] -> true
+      | _ -> false
+
+    let must_be_bot ty =
+      match M.is_bot (Fn.const (Sexp.Atom "")) ty with
+      | Ok [] -> true
+      | _ -> false
+
+    let must_be_sub ty ty' =
+      must_be_bot ty || must_be_top ty' || [%equal: t M.typ] ty ty'
+
+    let simplify cs =
+      (* Deduplicate *)
+      List.dedup_and_sort cs ~compare:compare_clause
+      (* Eliminate clauses which are trivially bottom *)
+      |> List.filter ~f:(fun { vars = _; pos_typ; neg_typ } ->
+             not (must_be_bot pos_typ || must_be_top neg_typ))
+      (* Eliminate subsumed clauses *)
+      |> List.filter ~f:(fun c ->
+             List.exists cs ~f:(fun c' ->
+                 (not (equal_clause c c'))
+                 && Set.is_subset c'.vars ~of_:c.vars
+                 && must_be_sub c.pos_typ c'.pos_typ
+                 && must_be_sub c'.neg_typ c.neg_typ)
+             |> not)
 
     let apply a t =
-      List.map t ~f:(fun { vars; typ } ->
+      List.map t ~f:(fun { vars; pos_typ; neg_typ } ->
           {
             vars = Var.Set.map vars ~f:(fun x -> Var.apply a x);
-            typ = Option.map ~f:(fun (n, t) -> (n, M.Arrow.apply a t)) typ;
+            pos_typ = M.Arrow.apply a pos_typ;
+            neg_typ = M.Arrow.apply a neg_typ;
           })
+
+    let meet_clause t t' =
+      {
+        vars = Set.union t.vars t'.vars;
+        pos_typ = M.meet t.pos_typ t'.pos_typ;
+        neg_typ = M.meet t.neg_typ t'.neg_typ;
+      }
+
+    let negate_clause t =
+      List.map (Set.to_list t.vars) ~f:(fun x ->
+          { top_clause with vars = Var.Set.singleton (Var.negate x) })
+      @ [
+          { bot_clause with pos_typ = t.neg_typ };
+          { bot_clause with neg_typ = t.pos_typ };
+        ]
+
+    let meet t t' =
+      List.cartesian_product t t'
+      |> List.map ~f:(fun (c, c') -> meet_clause c c')
+      |> simplify
+
+    let join t t' = t @ t' |> simplify
+    let negate t = List.map t ~f:negate_clause |> List.fold ~init:top ~f:meet
+
+    let%expect_test "normal forms" =
+      let var x = var (Type_var.of_string x) in
+      print_s [%message (var "a" |> negate : t)];
+      [%expect
+        {|
+        ("(var \"a\") |> negate"
+         (((vars (((var a) (neg true) (app (Drop ()))))) (pos_typ Top) (neg_typ Bot))))
+        |}];
+      print_s [%message (negate (join (var "a") (var "b")) : t)];
+      (* ~(a \/ b) = (~a /\ ~b) \/ ~a \/ ~b = (~a /\ ~b) *)
+      [%expect
+        {|
+        ("negate (join (var \"a\") (var \"b\"))"
+         (((vars
+            (((var a) (neg true) (app (Drop ())))
+             ((var b) (neg true) (app (Drop ())))))
+           (pos_typ Top) (neg_typ Bot))))
+        |}];
+      print_s [%message (negate (join (var "a") top) : t)];
+      [%expect {| ("negate (join (var \"a\") top)" ()) |}]
   end
 
   module Alg = struct
@@ -175,6 +265,18 @@ module Type (M : TypeSystem) = struct
   let var x = Alg.Var x
   let typ t = Alg.Typ t
   let apply a t = Alg.Apply (a, t)
+
+  let rec normalize : Alg.t -> Normal.t =
+    let open Normal in
+    function
+    | Var x -> var x
+    | Typ t -> typ (map ~f:normalize t)
+    | Apply (a, t) -> apply a (normalize t)
+    | Extreme Top -> top
+    | Extreme Bot -> bot
+    | Combine (Top, t, t') -> join (normalize t) (normalize t')
+    | Combine (Bot, t, t') -> meet (normalize t) (normalize t')
+    | Complement t -> negate (normalize t)
 end
 
 module Constraint = struct
@@ -244,10 +346,12 @@ end
 module Solver (M : TypeSystem) = struct
   open Type (M)
 
-  type bound =
-    | Lower of Alg.t * Type_var.t
-    | Upper of Type_var.t * Alg.t
-    | Fail of string * Alg.t list
+  type bound = Lower of Alg.t * Type_var.t | Upper of Type_var.t * Alg.t
+  [@@deriving sexp]
+
+  type normal_bound =
+    | NLower of Normal.t * Type_var.t
+    | NUpper of Type_var.t * Normal.t
   [@@deriving sexp]
 
   type dir = Alg.dir = Bot | Top
@@ -357,6 +461,11 @@ module Solver (M : TypeSystem) = struct
     | With (_, c) -> atomize_constraint c
     | Flow { sub; sup } -> atomize ~lower:sub ~upper:sup
     | All cs -> concat_map_or_error cs ~f:atomize_constraint
+
+  let normalize_bounds =
+    List.map ~f:(function
+      | Lower (l, u) -> NLower (normalize l, u)
+      | Upper (l, u) -> NUpper (l, normalize u))
 end
 
 module FabricTyper = struct
@@ -454,10 +563,8 @@ let%expect_test "" =
     let c = Constraint.simp c in
     print_s [%message (t : FabricTyper.Type.Alg.t)];
     print_s [%message (c : FabricTyper.Type.Alg.t Constraint.t)];
-    print_s
-      [%message
-        (FabricTyper.Solver.atomize_constraint c
-          : FabricTyper.Solver.bound list Or_error.t)]
+    let bounds = FabricTyper.Solver.(atomize_constraint c) in
+    print_s [%message (bounds : FabricTyper.Solver.bound list Or_error.t)]
   in
   test (Proj (Cons [ ("foo", Lit 5); ("bar", Tuple [ Lit 1; Lit 2 ]) ], "foo"));
   [%expect
@@ -474,7 +581,7 @@ let%expect_test "" =
              (foo (Present (Typ Int)))))
            (rest Absent)))))
        (sup (Typ (Record ((m ((foo (Present (Var $1))))) (rest Top))))))))
-    ("FabricTyper.Solver.atomize_constraint c" (Ok ((Lower (Typ Int) $1))))
+    (bounds (Ok ((Lower (Typ Int) $1))))
     |}];
   test
     (Fun
@@ -490,8 +597,7 @@ let%expect_test "" =
        (All
         ((Flow (sub (Var $2)) (sup (Typ Int)))
          (Flow (sub (Var $3)) (sup (Typ Int))))))))
-    ("FabricTyper.Solver.atomize_constraint c"
-     (Ok ((Upper $2 (Typ Int)) (Upper $3 (Typ Int)))))
+    (bounds (Ok ((Upper $2 (Typ Int)) (Upper $3 (Typ Int)))))
     |}];
   test
     (Fun
@@ -511,7 +617,7 @@ let%expect_test "" =
             (sup (Typ (Record ((m ((foo (Present (Var $7))))) (rest Top)))))))
           (Flow (sub (Var $7))
            (sup (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top))))))))))))
-    ("FabricTyper.Solver.atomize_constraint c"
+    (bounds
      (Ok
       ((Upper $4 (Typ (Record ((m ((foo (Present (Var $7))))) (rest Top)))))
        (Upper $7 (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top))))))))
@@ -532,7 +638,7 @@ let%expect_test "" =
            (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent)))))))
         (Flow (sub (Var $8))
          (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
-    ("FabricTyper.Solver.atomize_constraint c"
+    (bounds
      (Error
       ("Incompatible record fields" (lower (Present (Typ Int))) (upper Absent))))
     |}];
@@ -552,7 +658,7 @@ let%expect_test "" =
            (Typ (Record ((m ((bar (Present (Typ Int))))) (rest Absent)))))))
         (Flow (sub (Var $9))
          (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
-    ("FabricTyper.Solver.atomize_constraint c"
+    (bounds
      (Ok
       ((Upper $9
         (Typ (Record ((m ((bar (Present (Typ Int))) (foo Top))) (rest Absent)))))
@@ -571,7 +677,7 @@ let%expect_test "" =
          (Flow (sub (Var $11)) (sup (Apply (Drop (foo)) (Var $10))))
          (Flow (sub (Var $11))
           (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))))))
-    ("FabricTyper.Solver.atomize_constraint c"
+    (bounds
      (Ok
       ((Upper $10 (Typ (Record ((m ((foo Absent))) (rest Top)))))
        (Upper $11 (Apply (Drop (foo)) (Var $10)))
