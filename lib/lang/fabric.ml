@@ -24,12 +24,13 @@ module Repr = struct
 end
 
 module Type = struct
-  type dir = Top | Bot [@@deriving equal, sexp]
+  type dir = Top | Bot [@@deriving compare, sexp]
 
   let inv = function Top -> Bot | Bot -> Top
 
   module Field = struct
-    type 'a t = Top | Bot | Absent | Present of 'a [@@deriving equal, sexp]
+    type 'a t = Top | Bot | Absent | Present of 'a
+    [@@deriving sexp, equal, compare]
 
     let map ~f = function
       | Top -> Top
@@ -42,6 +43,7 @@ module Type = struct
     type 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
 
     val equal : ('a -> 'a -> bool) -> 'a t -> 'a t -> bool
+    val compare : ('a -> 'a -> int) -> 'a t -> 'a t -> int
     val t_of_sexp : (Sexp.t -> 'a) -> Sexp.t -> 'a t
     val sexp_of_t : ('a -> Sexp.t) -> 'a t -> Sexp.t
     val pretty : ('a -> Sexp.t) -> 'a t -> Sexp.t list
@@ -53,7 +55,7 @@ module Type = struct
     val subs : 'a t -> 'b t -> ('a Field.t * 'b Field.t) Label.Map.t
   end = struct
     type 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
-    [@@deriving sexp, equal]
+    [@@deriving sexp, equal, compare]
 
     let un = function `Absent -> Field.Absent | `Bot -> Bot | `Top -> Top
 
@@ -100,9 +102,9 @@ module Type = struct
     | Function of 't * 't
     | Array of 't
     | Record of 't Fields.t
-  [@@deriving equal, sexp]
+  [@@deriving sexp, equal, compare]
 
-  type t = T of t typ [@@deriving equal, sexp]
+  type t = T of t typ [@@deriving sexp, equal, compare]
 
   let map ~f = function
     | Top -> Top

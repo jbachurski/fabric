@@ -7,45 +7,186 @@ let next_type_var =
     cnt := !cnt + 1;
     Type_var.of_string ("$" ^ string_of_int !cnt)
 
-module Type = struct
-  include Lang.Fabric.Type
+type ('a, 'args) massage = ('a -> Sexp.t) -> 'args -> ('a * 'a) list Or_error.t
 
-  type alg =
-    | Extreme of dir
-    | Var of Type_var.t
-    | Typ of alg typ
-    | Arrow of arrow * alg
-    | Combine of dir * alg * alg
-    | Complement of alg
-  [@@deriving sexp]
+module type TypeSystem = sig
+  type 'a typ [@@deriving sexp, equal, compare]
+  type simple
+  type arrow
 
-  and arrow = Drop of Label.Set.t [@@deriving sexp]
+  val map : f:('a -> 'b) -> 'a typ -> 'b typ
+  val unwrap : simple -> simple typ
+  val decompose : ('a, 'a typ * 'a typ) massage
+  val is_top : ('a, 'a typ) massage
+  val is_bot : ('a, 'a typ) massage
+  val join : 'a typ -> 'a typ -> 'a typ
+  val meet : 'a typ -> 'a typ -> 'a typ
 
-  let rec alg_of_typ (T t) = map ~f:(fun t -> Typ (alg_of_typ t)) t
-  let arrow_compose (Drop ls) (Drop ls') = Drop (Set.union ls ls')
+  module Arrow : sig
+    type t = arrow [@@deriving sexp, equal, compare]
 
-  let arrow_apply (Drop ls) = function
-    | Record fs ->
-        Record (Set.fold ls ~init:fs ~f:(fun fs l -> Fields.update fs l Top))
-    | t -> t
+    val id : t
+    val compose : t -> t -> t
+    val apply : t -> 'a typ -> 'a typ
+    val left_adjoint : t -> t
+    val right_adjoint : t -> t
+  end
+end
 
-  let arrow_left_adjoint = function
-    | Drop _ -> failwith "arrow_left_adjoint: Drop"
+type fabric_arrow = Drop of Label.Set.t
 
-  let arrow_right_adjoint = function
-    | Drop _ -> failwith "arrow_right_adjoint: Drop"
+module FabricTypeSystem :
+  TypeSystem
+    with type 'a typ = 'a Lang.Fabric.Type.typ
+     and type arrow = fabric_arrow = struct
+  open Lang.Fabric.Type
+
+  type nonrec 'a typ = 'a typ [@@deriving sexp, equal, compare]
+  type simple = t
+  type arrow = fabric_arrow
+
+  let map = map
+  let unwrap (T t) = t
+
+  let field_decompose sexp ((lower, upper) : 'a Field.t * 'a Field.t) :
+      ('a * 'a) list Or_error.t =
+    match (lower, upper) with
+    | Bot, _ | _, Top | Absent, Absent -> Ok []
+    | Present t, Present t' -> Ok [ (t, t') ]
+    | (Absent | Top), Present _
+    | (Present _ | Top), Absent
+    | (Absent | Present _ | Top), Bot ->
+        let lower = Field.sexp_of_t sexp lower
+        and upper = Field.sexp_of_t sexp upper in
+        error_s
+          [%message
+            "Incompatible record fields" (lower : Sexp.t) (upper : Sexp.t)]
+
+  let decompose sexp ((lower : 'a typ), (upper : 'a typ)) :
+      ('a * 'a) list Or_error.t =
+    match (lower, upper) with
+    | _, Top -> Ok []
+    | Bot, _ -> Ok []
+    | Record fs, Record fs' ->
+        Fields.subs fs fs' |> Map.to_alist
+        |> List.map ~f:(fun (_, (f, f')) -> field_decompose sexp (f, f'))
+        |> Or_error.all
+        |> Or_error.map ~f:List.concat
+    | _ ->
+        let lower = sexp_of_typ sexp lower and upper = sexp_of_typ sexp upper in
+        error_s
+          [%message "Incompatible types" (lower : Sexp.t) (upper : Sexp.t)]
+
+  let is_top sexp (t : 'a typ) =
+    match t with
+    | Top -> Ok []
+    | _ ->
+        let t = sexp_of_typ sexp t in
+        error_s [%message "Expected top type" (t : Sexp.t)]
+
+  let is_bot sexp (t : 'a typ) =
+    match t with
+    | Bot -> Ok []
+    | _ ->
+        let t = sexp_of_typ sexp t in
+        error_s [%message "Expected bottom type" (t : Sexp.t)]
+
+  let join (_ : 'a typ) (_ : 'a typ) : 'a typ = failwith "unimplemented: join"
+  let meet (_ : 'a typ) (_ : 'a typ) : 'a typ = failwith "unimplemented: meet"
+
+  module Arrow = struct
+    open Lang.Fabric.Type
+
+    type t = fabric_arrow = Drop of Label.Set.t
+    [@@deriving sexp, equal, compare]
+
+    let id = Drop Label.Set.empty
+    let compose (Drop ls) (Drop ls') = Drop (Set.union ls ls')
+
+    let apply (Drop ls) = function
+      | Record fs ->
+          Record (Set.fold ls ~init:fs ~f:(fun fs l -> Fields.update fs l Top))
+      | t -> t
+
+    let left_adjoint = function Drop _ -> failwith "Arrow.left_adjoint: Drop"
+
+    let right_adjoint = function
+      | Drop _ -> failwith "Arrow.right_adjoint: Drop"
+  end
+end
+
+module Type (M : TypeSystem) = struct
+  open M
+  open Lang.Sym
+
+  module Normal = struct
+    module Var = struct
+      module T = struct
+        type t = { var : Type_var.t; neg : bool; app : Arrow.t }
+        [@@deriving sexp, equal, compare]
+      end
+
+      include T
+
+      let var x = { var = x; neg = false; app = Arrow.id }
+      let negate t = { t with neg = not t.neg }
+      let apply a t = { t with app = Arrow.compose a t.app }
+
+      module Set = Set.Make (T)
+    end
+
+    type clause = { vars : Var.Set.t; typ : (bool * t M.typ) option }
+    and t = clause list [@@deriving sexp, equal, compare]
+
+    let rec simple t : t =
+      [
+        {
+          vars = Var.Set.empty;
+          typ = Some (false, M.map ~f:(fun t -> simple t) (M.unwrap t));
+        };
+      ]
+
+    let bot : t = []
+    let top : t = [ { vars = Var.Set.empty; typ = None } ]
+    let typ t : t = [ { vars = Var.Set.empty; typ = Some t } ]
+    let var x = [ { vars = Var.Set.singleton (Var.var x); typ = None } ]
+
+    let apply a t =
+      List.map t ~f:(fun { vars; typ } ->
+          {
+            vars = Var.Set.map vars ~f:(fun x -> Var.apply a x);
+            typ = Option.map ~f:(fun (n, t) -> (n, M.Arrow.apply a t)) typ;
+          })
+  end
+
+  module Alg = struct
+    type dir = Bot | Top [@@deriving sexp, equal, compare]
+
+    type t =
+      | Var of Type_var.t
+      | Typ of t typ
+      | Apply of M.Arrow.t * t
+      | Extreme of dir
+      | Combine of dir * t * t
+      | Complement of t
+    [@@deriving sexp, equal, compare]
+  end
+
+  let var x = Alg.Var x
+  let typ t = Alg.Typ t
+  let apply a t = Alg.Apply (a, t)
 end
 
 module Constraint = struct
-  type t =
-    | With of Type_var.t * t
-    | Flow of { sub : Type.alg; sup : Type.alg }
-    | All of t list
+  type 'alg t =
+    | With of Type_var.t * 'alg t
+    | Flow of { sub : 'alg; sup : 'alg }
+    | All of 'alg t list
   [@@deriving sexp]
 
   let truth = All []
 
-  let rec simp : t -> t = function
+  let rec simp = function
     | With (x, c) -> ( match With (x, simp c) with All [] -> All [] | c -> c)
     | Flow f -> Flow f
     | All cs -> (
@@ -56,26 +197,25 @@ module Constraint = struct
         match cs with [ c ] -> c | cs -> All cs)
 end
 
-module Constrained : sig
+module Constrained (M : TypeSystem) : sig
   type 'a t
 
-  val unwrap : 'a t -> 'a * Constraint.t
+  val wrap : 'a * Type(M).Alg.t Constraint.t -> 'a t
+  val unwrap : 'a t -> 'a * Type(M).Alg.t Constraint.t
   val return : 'a -> 'a t
   val all : 'a t list -> 'a list t
-
-  val all_in_map :
-    ('key, 'a t Type.Field.t, 'cmp) Map.t ->
-    ('key, 'a Type.Field.t, 'cmp) Map.t t
-
-  val ( <: ) : Type.alg -> Type.alg -> unit t
-  val ( let$ ) : unit -> (Type.alg -> 'a t) -> 'a t
+  val all_in_map : ('key, 'a t, 'cmp) Map.t -> ('key, 'a, 'cmp) Map.t t
+  val ( <: ) : Type(M).Alg.t -> Type(M).Alg.t -> unit t
+  val ( let$ ) : unit -> (Type(M).Alg.t -> 'a t) -> 'a t
   val ( let* ) : 'a t -> ('a -> 'b t) -> 'b t
   val ( and* ) : 'a t -> 'b t -> ('a * 'b) t
 end = struct
   open Constraint
+  open Type (M)
 
-  type nonrec 'a t = 'a * t
+  type nonrec 'a t = 'a * Alg.t t
 
+  let wrap = Fn.id
   let unwrap = Fn.id
   let return t = (t, truth)
 
@@ -83,19 +223,15 @@ end = struct
     ( List.map ts ~f:(fun (t, _) -> t),
       List.fold ts ~init:truth ~f:(fun c (_, c') -> All [ c; c' ]) )
 
-  let all_in_field (fd : _ t Type.Field.t) =
-    match fd with Top | Bot | Absent -> truth | Present (_, c) -> c
-
   let all_in_map m =
-    ( Map.map m ~f:(Type.Field.map ~f:(fun (t, _) -> t)),
-      Map.fold m ~init:truth ~f:(fun ~key:_ ~data:c' c ->
-          All [ c; all_in_field c' ]) )
+    ( Map.map m ~f:(fun (t, _) -> t),
+      Map.fold m ~init:truth ~f:(fun ~key:_ ~data:(_, c') c -> All [ c; c' ]) )
 
   let ( <: ) sub sup = ((), Flow { sub; sup })
 
   let ( let$ ) () f =
     let x = next_type_var () in
-    let t, c = f (Type.Var x) in
+    let t, c = f (var x) in
     (t, With (x, c))
 
   let ( let* ) (t, c) f =
@@ -105,49 +241,24 @@ end = struct
   let ( and* ) (t, c) (t', c') : _ t = ((t, t'), All [ c; c' ])
 end
 
-module Solver = struct
-  open Type
+module Solver (M : TypeSystem) = struct
+  open Type (M)
 
   type bound =
-    | Lower of alg * Type_var.t
-    | Upper of Type_var.t * alg
-    | Fail of string * Type.alg list
+    | Lower of Alg.t * Type_var.t
+    | Upper of Type_var.t * Alg.t
+    | Fail of string * Alg.t list
   [@@deriving sexp]
 
-  let field_decompose ~(lower : alg Field.t) ~(upper : alg Field.t) :
-      (alg * alg) list option =
-    match (lower, upper) with
-    | Bot, _ | _, Top | Absent, Absent -> Some []
-    | Present t, Present t' -> Some [ (t, t') ]
-    | (Absent | Top), Present _ -> None
-    | (Present _ | Top), Absent -> None
-    | (Absent | Present _ | Top), Bot -> None
+  type dir = Alg.dir = Bot | Top
 
-  let decompose ~(lower : alg typ) ~(upper : alg typ) : (alg * alg) list option
-      =
-    match (lower, upper) with
-    | _, Top -> Some []
-    | Bot, _ -> Some []
-    | Record fs, Record fs' ->
-        Fields.subs fs fs' |> Map.to_alist
-        |> List.map ~f:(fun (_, (f, f')) -> field_decompose ~lower:f ~upper:f')
-        |> Option.all |> Option.map ~f:List.concat
-    | _ -> None
+  let concat_map_or_error xs ~f =
+    List.map xs ~f |> Or_error.all |> Or_error.map ~f:List.concat
 
-  let is_top (t : 'a typ) : bound list =
-    match t with Top -> [] | _ -> [ Fail ("not bot", [ Typ t ]) ]
-
-  let is_bot (t : 'a typ) : bound list =
-    match t with Bot -> [] | _ -> [ Fail ("not top", [ Typ t ]) ]
-
-  let complement_sub (t : 'a typ) (t' : 'a typ) : bound list =
-    [ Fail ("complement not a subtype", [ Complement (Typ t); Typ t' ]) ]
-
-  let sub_complement (t : 'a typ) (t' : 'a typ) : bound list =
-    [ Fail ("not a complement subtype", [ Typ t; Complement (Typ t') ]) ]
+  let inv = function Top -> Bot | Bot -> Top
 
   (* Lift back to general form *)
-  let un t =
+  let un t : Alg.t =
     match t with
     | `Extreme dir -> Extreme dir
     | `Var x -> Var x
@@ -155,12 +266,12 @@ module Solver = struct
     | `Combine (dir, t, t') -> Combine (dir, t, t')
     | `Complement (`Var x) -> Complement (Var x)
     | `Complement (`Typ t) -> Complement (Typ t)
-    | `Arrow (a, `Var x) -> Arrow (a, Var x)
-    | `Arrow (a, `VarComplement x) -> Arrow (a, Complement (Var x))
+    | `Apply (a, `Var x) -> Apply (a, Var x)
+    | `Apply (a, `VarComplement x) -> Apply (a, Complement (Var x))
 
   (* Simplify to reduce the number of possible cases, 
      mainly for complements and arrows *)
-  let rec simp (t : alg) =
+  let rec simp (t : Alg.t) =
     match t with
     | Extreme dir -> `Extreme dir
     | Var x -> `Var x
@@ -173,79 +284,102 @@ module Solver = struct
     | Complement (Extreme dir) -> `Extreme (inv dir)
     | Complement (Var x) -> `Complement (`Var x)
     | Complement (Typ t) -> `Complement (`Typ t)
-    | Complement (Arrow (a, t)) -> simp (Arrow (a, Complement t))
+    | Complement (Apply (a, t)) -> simp (Apply (a, Complement t))
     (* Arrows *)
-    | Arrow (_, Extreme dir) -> `Extreme dir
-    | Arrow (a, Arrow (a', t)) -> simp (Arrow (arrow_compose a a', t))
-    | Arrow (a, Combine (dir, t, t')) ->
-        `Combine (dir, Arrow (a, t), Arrow (a, t'))
-    | Arrow (a, Var x) -> `Arrow (a, `Var x)
-    | Arrow (a, Typ t) -> simp (Typ (arrow_apply a t))
-    | Arrow (a, Complement t) -> (
+    | Apply (_, Extreme dir) -> `Extreme dir
+    | Apply (a, Apply (a', t)) -> simp (Apply (M.Arrow.compose a a', t))
+    | Apply (a, Combine (dir, t, t')) ->
+        `Combine (dir, Apply (a, t), Apply (a, t'))
+    | Apply (a, Var x) -> `Apply (a, `Var x)
+    | Apply (a, Typ t) -> simp (Typ (M.Arrow.apply a t))
+    | Apply (a, Complement t) -> (
         match simp t with
-        | `Complement (`Var x) -> `Arrow (a, `VarComplement x)
-        | `Complement (`Typ t) -> simp (Complement (Typ (arrow_apply a t)))
-        | t' -> simp (Arrow (a, un t')))
+        | `Complement (`Var x) -> `Apply (a, `VarComplement x)
+        | `Complement (`Typ t) -> simp (Complement (Typ (M.Arrow.apply a t)))
+        | t' -> simp (Apply (a, un t')))
 
-  let unv x =
+  let unv x : Alg.t =
     match x with `Var x -> Var x | `VarComplement x -> Complement (Var x)
 
-  let rec atomize ~lower ~upper =
+  let rec atomize ~lower ~upper : bound list Or_error.t =
     match (simp lower, simp upper) with
     (* Atomic bounds *)
-    | `Var x, t2 -> [ Upper (x, un t2) ]
-    | t1, `Var x -> [ Lower (un t1, x) ]
+    | `Var x, t2 -> Ok [ Upper (x, un t2) ]
+    | t1, `Var x -> Ok [ Lower (un t1, x) ]
     (* Extremes *)
-    | `Extreme Bot, _ -> []
-    | _, `Extreme Top -> []
-    | `Extreme Top, `Extreme Bot -> [ Fail ("top <= bot", []) ]
-    | `Typ t1, `Extreme Bot -> is_bot t1
-    | `Extreme Top, `Typ t2 -> is_top t2
+    | `Extreme Bot, _ -> Ok []
+    | _, `Extreme Top -> Ok []
+    | `Extreme Top, `Extreme Bot -> error_s [%message "top <= bot"]
+    | `Typ t1, `Extreme Bot ->
+        M.is_bot Alg.sexp_of_t t1 |> atomize_decomposition
+    | `Extreme Top, `Typ t2 ->
+        M.is_top Alg.sexp_of_t t2 |> atomize_decomposition
     (* Decompose inequality on type constructors *)
-    | `Typ lower, `Typ upper -> (
-        match decompose ~lower ~upper with
-        | Some bs -> List.concat_map ~f:(fun (l, u) -> l *<=* u) bs
-        | None -> [ Fail ("decompose", [ Typ lower; Typ upper ]) ])
+    | `Typ lower, `Typ upper ->
+        M.decompose Alg.sexp_of_t (lower, upper) |> atomize_decomposition
     (* Joins and meets *)
-    | `Combine (Top, t1, t1'), t2 -> (t1 *<=* un t2) @ (t1' *<=* un t2)
-    | t1, `Combine (Bot, t2, t2') -> (un t1 *<=* t2) @ (un t1 *<=* t2')
+    | `Combine (Top, t1, t1'), t2 -> (t1 *<=* un t2) @@ (t1' *<=* un t2)
+    | t1, `Combine (Bot, t2, t2') -> (un t1 *<=* t2) @@ (un t1 *<=* t2')
     | `Combine (Bot, t1, t1'), t2 -> t1 *<=* Combine (Bot, Complement t1', un t2)
     | t1, `Combine (Top, t2, t2') ->
         Combine (Top, un t1, Complement t2) *<=* t2'
     (* Complements *)
     | `Complement t1, `Complement t2 -> un t2 *<=* un t1
-    | `Complement (`Typ t1), `Typ t2 -> complement_sub t1 t2
-    | `Typ t1, `Complement (`Typ t2) -> sub_complement t1 t2
+    | `Complement (`Typ t1), `Typ t2 ->
+        M.is_top Alg.sexp_of_t (M.join t1 t2) |> atomize_decomposition
+    | `Typ t1, `Complement (`Typ t2) ->
+        M.is_bot Alg.sexp_of_t (M.meet t1 t2) |> atomize_decomposition
     | t1, `Complement (`Var x) -> Var x *<=* Complement (un t1)
     | `Complement (`Var x), t2 -> Complement (un t2) *<=* Var x
     | `Extreme Top, `Complement t2 -> un t2 *<=* Extreme Bot
     | `Complement t1, `Extreme Bot -> Extreme Top *<=* un t1
     (* Arrows *)
-    | `Extreme dir, `Arrow (_, t2) -> Extreme dir *<=* unv t2
-    | `Arrow (_, t1), `Extreme dir -> unv t1 *<=* Extreme dir
+    | `Extreme dir, `Apply (_, t2) -> Extreme dir *<=* unv t2
+    | `Apply (_, t1), `Extreme dir -> unv t1 *<=* Extreme dir
     (* This case would trigger nondeterministically for both of the latter reductions,
        so we produce both the adjoint-equivalent bounds *)
-    | `Arrow (a1, t1), `Arrow (a2, t2) ->
-        (Arrow (arrow_compose (arrow_left_adjoint a2) a1, unv t1) *<=* unv t2)
-        @ (unv t1 *<=* Arrow (arrow_compose (arrow_right_adjoint a1) a2, unv t2))
-    | t1, `Arrow (a, x) -> Arrow (arrow_left_adjoint a, un t1) *<=* unv x
-    | `Arrow (a, x), t2 -> unv x *<=* Arrow (arrow_right_adjoint a, un t2)
+    | `Apply (a1, t1), `Apply (a2, t2) ->
+        Apply (M.Arrow.compose (M.Arrow.left_adjoint a2) a1, unv t1)
+        *<=* unv t2
+        @@ unv t1
+           *<=* Apply (M.Arrow.compose (M.Arrow.right_adjoint a1) a2, unv t2)
+    | t1, `Apply (a, x) -> Apply (M.Arrow.left_adjoint a, un t1) *<=* unv x
+    | `Apply (a, x), t2 -> unv x *<=* Apply (M.Arrow.right_adjoint a, un t2)
 
+  and atomize_decomposition =
+    Or_error.bind ~f:(concat_map_or_error ~f:(fun (l, u) -> l *<=* u))
+
+  and ( @@ ) a b = concat_map_or_error ~f:Fn.id [ a; b ]
   and ( *<=* ) lower upper = atomize ~lower ~upper
 
-  let rec atomize_constraint : Constraint.t -> bound list = function
+  let rec atomize_constraint : Alg.t Constraint.t -> bound list Or_error.t =
+    function
     | With (_, c) -> atomize_constraint c
     | Flow { sub; sup } -> atomize ~lower:sub ~upper:sup
-    | All cs -> List.concat_map ~f:atomize_constraint cs
+    | All cs -> concat_map_or_error cs ~f:atomize_constraint
 end
 
-module TypeExpr = struct
+module FabricTyper = struct
+  module Type = Type (FabricTypeSystem)
+  module Constrained = Constrained (FabricTypeSystem)
+  module Field = Lang.Fabric.Type.Field
+  module Fields = Lang.Fabric.Type.Fields
+  module Solver = Solver (FabricTypeSystem)
   open Lang.Fabric.Expr
+  open Type
 
-  let rec go (env : Type.alg Var.Map.t) : t -> Type.alg Constrained.t =
+  let all_in_field (fd : _ Lang.Fabric.Type.Field.t) =
+    match fd with
+    | Top -> Constrained.wrap (Field.Top, Constraint.truth)
+    | Bot -> Constrained.wrap (Field.Bot, Constraint.truth)
+    | Absent -> Constrained.wrap (Field.Absent, Constraint.truth)
+    | Present t ->
+        let t, c = Constrained.unwrap t in
+        Constrained.wrap (Field.Present t, c)
+
+  let rec go (env : Alg.t Var.Map.t) : t -> Alg.t Constrained.t =
     let open Constrained in
-    let open Type in
-    let return_typ t = return (Type.Typ t) in
+    let return_typ (t : Alg.t Lang.Fabric.Type.typ) = return (typ t) in
     function
     | Var (x, _) -> return (Map.find_exn env (Var.of_string x))
     | Lit _ -> return_typ Int
@@ -267,15 +401,16 @@ module TypeExpr = struct
             (fs
             |> List.map ~f:(fun (l, e) -> (Label.of_string l, e))
             |> Label.Map.of_alist_exn
-            |> Map.map ~f:(fun e -> Field.Present (go env e)))
+            |> Map.map ~f:(fun e -> Field.Present (go env e))
+            |> Map.map ~f:all_in_field)
         in
-        return_typ (Record (Fields.closed fs))
+        return_typ (Record (Lang.Fabric.Type.Fields.closed fs))
     | Proj (e, f) ->
         let$ f_ = () in
         let* e = go env e in
         let* () =
           e
-          <: Typ
+          <: typ
                (Record
                   (Label.Map.singleton (Label.of_string f) (Field.Present f_)
                   |> Fields.open_))
@@ -286,20 +421,20 @@ module TypeExpr = struct
         let$ r = () in
         let* e = go env e and* e' = go env e' in
         let field fd = Label.Map.singleton f fd in
-        let* () = e' <: Typ (Record (field Field.Absent |> Fields.open_))
-        and* () = r <: Arrow (Drop (Label.Set.singleton f), e')
-        and* () = r <: Typ (Record (field (Field.Present e) |> Fields.open_)) in
+        let* () = e' <: typ (Record (field Field.Absent |> Fields.open_))
+        and* () = r <: apply (Drop (Label.Set.singleton f)) e'
+        and* () = r <: typ (Record (field (Field.Present e) |> Fields.open_)) in
         return r
     | Op (e, "", e') ->
         let$ arg = () in
         let$ res = () in
         let* e = go env e and* e' = go env e' in
-        let* () = e <: Typ (Function (arg, res)) and* () = e' <: arg in
+        let* () = e <: typ (Function (arg, res)) and* () = e' <: arg in
         return res
     | Op (e, ("+" | "-" | "*" | "/"), e') ->
         let* e = go env e in
         let* e' = go env e' in
-        let* () = e <: Typ Int and* () = e' <: Typ Int in
+        let* () = e <: typ Int and* () = e' <: typ Int in
         return_typ Int
     | Array _ -> failwith "TypeExpr.go: Array"
     | Idx _ -> failwith "TypeExpr.go: Idx"
@@ -313,11 +448,16 @@ end
 
 let%expect_test "" =
   let test e =
-    let t, c = Constrained.unwrap (TypeExpr.go Var.Map.empty e) in
+    let t, c =
+      FabricTyper.Constrained.unwrap (FabricTyper.go Var.Map.empty e)
+    in
     let c = Constraint.simp c in
-    print_s [%message (t : Type.alg)];
-    print_s [%message (c : Constraint.t)];
-    print_s [%message (Solver.atomize_constraint c : Solver.bound list)]
+    print_s [%message (t : FabricTyper.Type.Alg.t)];
+    print_s [%message (c : FabricTyper.Type.Alg.t Constraint.t)];
+    print_s
+      [%message
+        (FabricTyper.Solver.atomize_constraint c
+          : FabricTyper.Solver.bound list Or_error.t)]
   in
   test (Proj (Cons [ ("foo", Lit 5); ("bar", Tuple [ Lit 1; Lit 2 ]) ], "foo"));
   [%expect
@@ -334,7 +474,7 @@ let%expect_test "" =
              (foo (Present (Typ Int)))))
            (rest Absent)))))
        (sup (Typ (Record ((m ((foo (Present (Var $1))))) (rest Top))))))))
-    ("Solver.atomize_constraint c" ((Lower (Typ Int) $1)))
+    ("FabricTyper.Solver.atomize_constraint c" (Ok ((Lower (Typ Int) $1))))
     |}];
   test
     (Fun
@@ -350,7 +490,8 @@ let%expect_test "" =
        (All
         ((Flow (sub (Var $2)) (sup (Typ Int)))
          (Flow (sub (Var $3)) (sup (Typ Int))))))))
-    ("Solver.atomize_constraint c" ((Upper $2 (Typ Int)) (Upper $3 (Typ Int))))
+    ("FabricTyper.Solver.atomize_constraint c"
+     (Ok ((Upper $2 (Typ Int)) (Upper $3 (Typ Int)))))
     |}];
   test
     (Fun
@@ -370,9 +511,10 @@ let%expect_test "" =
             (sup (Typ (Record ((m ((foo (Present (Var $7))))) (rest Top)))))))
           (Flow (sub (Var $7))
            (sup (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top))))))))))))
-    ("Solver.atomize_constraint c"
-     ((Upper $4 (Typ (Record ((m ((foo (Present (Var $7))))) (rest Top)))))
-      (Upper $7 (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top)))))))
+    ("FabricTyper.Solver.atomize_constraint c"
+     (Ok
+      ((Upper $4 (Typ (Record ((m ((foo (Present (Var $7))))) (rest Top)))))
+       (Upper $7 (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top))))))))
     |}];
   test (Extend ("foo", Lit 0, Cons [ ("foo", Lit 1) ]));
   [%expect
@@ -386,16 +528,13 @@ let%expect_test "" =
          (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
         (Flow (sub (Var $8))
          (sup
-          (Arrow (Drop (foo))
+          (Apply (Drop (foo))
            (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent)))))))
         (Flow (sub (Var $8))
          (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
-    ("Solver.atomize_constraint c"
-     ((Fail decompose
-       ((Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent))))
-        (Typ (Record ((m ((foo Absent))) (rest Top))))))
-      (Upper $8 (Typ (Record ((m ((foo Top))) (rest Absent)))))
-      (Upper $8 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))
+    ("FabricTyper.Solver.atomize_constraint c"
+     (Error
+      ("Incompatible record fields" (lower (Present (Typ Int))) (upper Absent))))
     |}];
   test (Extend ("foo", Lit 0, Cons [ ("bar", Lit 1) ]));
   [%expect
@@ -409,14 +548,15 @@ let%expect_test "" =
          (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
         (Flow (sub (Var $9))
          (sup
-          (Arrow (Drop (foo))
+          (Apply (Drop (foo))
            (Typ (Record ((m ((bar (Present (Typ Int))))) (rest Absent)))))))
         (Flow (sub (Var $9))
          (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
-    ("Solver.atomize_constraint c"
-     ((Upper $9
-       (Typ (Record ((m ((bar (Present (Typ Int))) (foo Top))) (rest Absent)))))
-      (Upper $9 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))
+    ("FabricTyper.Solver.atomize_constraint c"
+     (Ok
+      ((Upper $9
+        (Typ (Record ((m ((bar (Present (Typ Int))) (foo Top))) (rest Absent)))))
+       (Upper $9 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))
     |}];
   test (Fun (Atom ("x", T Top), Extend ("foo", Lit 0, Var ("x", T Top))));
   [%expect
@@ -428,11 +568,12 @@ let%expect_test "" =
        (All
         ((Flow (sub (Var $10))
           (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
-         (Flow (sub (Var $11)) (sup (Arrow (Drop (foo)) (Var $10))))
+         (Flow (sub (Var $11)) (sup (Apply (Drop (foo)) (Var $10))))
          (Flow (sub (Var $11))
           (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))))))
-    ("Solver.atomize_constraint c"
-     ((Upper $10 (Typ (Record ((m ((foo Absent))) (rest Top)))))
-      (Upper $11 (Arrow (Drop (foo)) (Var $10)))
-      (Upper $11 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))
+    ("FabricTyper.Solver.atomize_constraint c"
+     (Ok
+      ((Upper $10 (Typ (Record ((m ((foo Absent))) (rest Top)))))
+       (Upper $11 (Apply (Drop (foo)) (Var $10)))
+       (Upper $11 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))
     |}]
