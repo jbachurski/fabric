@@ -229,24 +229,60 @@ module Type (M : TypeSystem) = struct
 
     let%expect_test "normal forms" =
       let var x = var (Type_var.of_string x) in
+      let ( + ) = join and ( * ) = meet and ( ! ) = negate in
       print_s [%message (var "a" |> negate : t)];
       [%expect
         {|
         ("(var \"a\") |> negate"
          (((vars (((var a) (neg true) (app (Drop ()))))) (pos_typ Top) (neg_typ Bot))))
         |}];
-      print_s [%message (negate (join (var "a") (var "b")) : t)];
+      print_s [%message (!(var "a" + var "b") : t)];
       (* ~(a \/ b) = (~a /\ ~b) \/ ~a \/ ~b = (~a /\ ~b) *)
       [%expect
         {|
-        ("negate (join (var \"a\") (var \"b\"))"
+        ("!((var \"a\") + (var \"b\"))"
          (((vars
             (((var a) (neg true) (app (Drop ())))
              ((var b) (neg true) (app (Drop ())))))
            (pos_typ Top) (neg_typ Bot))))
         |}];
-      print_s [%message (negate (join (var "a") top) : t)];
-      [%expect {| ("negate (join (var \"a\") top)" ()) |}]
+      print_s [%message (!(var "a" + top) : t)];
+      [%expect {| ("!((var \"a\") + top)" ()) |}];
+      print_s
+        [%message
+          ((var "a" + var "b") * (var "b" + var "c") * (var "c" + var "a") : t)];
+      print_s
+        [%message
+          ((var "a" * var "b") + (var "b" * var "c") + (var "c" * var "a") : t)];
+      [%expect
+        {|
+        ("(((var \"a\") + (var \"b\")) * ((var \"b\") + (var \"c\"))) * ((var \"c\") + (var \"a\"))"
+         (((vars
+            (((var a) (neg false) (app (Drop ())))
+             ((var b) (neg false) (app (Drop ())))))
+           (pos_typ Top) (neg_typ Bot))
+          ((vars
+            (((var a) (neg false) (app (Drop ())))
+             ((var c) (neg false) (app (Drop ())))))
+           (pos_typ Top) (neg_typ Bot))
+          ((vars
+            (((var b) (neg false) (app (Drop ())))
+             ((var c) (neg false) (app (Drop ())))))
+           (pos_typ Top) (neg_typ Bot))))
+        ("(((var \"a\") * (var \"b\")) + ((var \"b\") * (var \"c\"))) + ((var \"c\") * (var \"a\"))"
+         (((vars
+            (((var a) (neg false) (app (Drop ())))
+             ((var b) (neg false) (app (Drop ())))))
+           (pos_typ Top) (neg_typ Bot))
+          ((vars
+            (((var a) (neg false) (app (Drop ())))
+             ((var c) (neg false) (app (Drop ())))))
+           (pos_typ Top) (neg_typ Bot))
+          ((vars
+            (((var b) (neg false) (app (Drop ())))
+             ((var c) (neg false) (app (Drop ())))))
+           (pos_typ Top) (neg_typ Bot))))
+        |}]
   end
 
   module Alg = struct
