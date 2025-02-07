@@ -444,6 +444,7 @@ module Solver (M : TypeSystem) = struct
   let rec atomize ~lower ~upper : bound list Or_error.t =
     match (simp lower, simp upper) with
     (* Atomic bounds *)
+    | `Var x1, `Var x2 -> Ok [ Lower (Var x1, x2); Upper (x1, Var x2) ]
     | `Var x, t2 -> Ok [ Upper (x, un t2) ]
     | t1, `Var x -> Ok [ Lower (un t1, x) ]
     (* Extremes *)
