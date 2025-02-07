@@ -14,6 +14,7 @@ module type TypeSystem = sig
   type simple
   type arrow
 
+  val pretty : ('a -> Sexp.t) -> 'a typ -> Sexp.t
   val map : f:('a -> 'b) -> 'a typ -> 'b typ
   val unwrap : simple -> simple typ
   val decompose : ('a, 'a typ * 'a typ) massage
@@ -28,6 +29,7 @@ module type TypeSystem = sig
     type t = arrow [@@deriving sexp, equal, compare]
 
     val id : t
+    val is_id : t -> bool
     val compose : t -> t -> t
     val apply : t -> 'a typ -> 'a typ
     val left_adjoint : t -> t
@@ -47,6 +49,7 @@ module FabricTypeSystem :
   type simple = t
   type arrow = fabric_arrow
 
+  let pretty = pretty'
   let map = map
   let unwrap (T t) = t
 
@@ -67,8 +70,13 @@ module FabricTypeSystem :
   let decompose sexp ((lower : 'a typ), (upper : 'a typ)) :
       ('a * 'a) list Or_error.t =
     match (lower, upper) with
-    | _, Top -> Ok []
-    | Bot, _ -> Ok []
+    | _, Top | Bot, _ | Int, Int | Float, Float -> Ok []
+    | Tuple ts, Tuple ts' -> (
+        match List.zip ts ts' with
+        | Ok ts'' -> Ok ts''
+        | Unequal_lengths -> error_s [%message "Tuples of different arities"])
+    | Function (s, t), Function (s', t') -> Ok [ (t, t'); (s', s) ]
+    | Array t, Array t' -> Ok [ (t, t') ]
     | Record fs, Record fs' ->
         Fields.subs fs fs' |> Map.to_alist
         |> List.map ~f:(fun (_, (f, f')) -> field_decompose sexp (f, f'))
@@ -115,6 +123,7 @@ module FabricTypeSystem :
     [@@deriving sexp, equal, compare]
 
     let id = Drop Label.Set.empty
+    let is_id (Drop s) = Set.is_empty s
     let compose (Drop ls) (Drop ls') = Drop (Set.union ls ls')
 
     let apply (Drop ls) = function
@@ -142,6 +151,15 @@ module Type (M : TypeSystem) = struct
 
       include T
 
+      let pretty { var; neg; app } =
+        let open Sexp in
+        let x = Atom (Type_var.to_string var) in
+        match (neg, Arrow.is_id app) with
+        | false, true -> x
+        | true, true -> List [ Atom "~"; x ]
+        | false, false -> List [ Arrow.sexp_of_t app; x ]
+        | true, false -> List [ Atom "~"; Arrow.sexp_of_t app; x ]
+
       let var x = { var = x; neg = false; app = Arrow.id }
       let negate t = { t with neg = not t.neg }
       let apply a t = { t with app = Arrow.compose a t.app }
@@ -150,7 +168,43 @@ module Type (M : TypeSystem) = struct
     end
 
     type clause = { vars : Var.Set.t; pos_typ : t M.typ; neg_typ : t M.typ }
+    [@@deriving sexp, equal, compare]
+
     and t = clause list [@@deriving sexp, equal, compare]
+
+    let must_be_top ty =
+      match M.is_top (Fn.const (Sexp.Atom "")) ty with
+      | Ok [] -> true
+      | _ -> false
+
+    let must_be_bot ty =
+      match M.is_bot (Fn.const (Sexp.Atom "")) ty with
+      | Ok [] -> true
+      | _ -> false
+
+    let must_be_sub ty ty' =
+      must_be_bot ty || must_be_top ty' || [%equal: t M.typ] ty ty'
+
+    let rec pretty_clause { vars; pos_typ; neg_typ } =
+      let open Sexp in
+      let os =
+        List.map ~f:Var.pretty (Core.Set.to_list vars)
+        @ (if must_be_top pos_typ then [] else [ M.pretty pretty pos_typ ])
+        @
+        if must_be_bot neg_typ then []
+        else [ List [ Atom "~"; M.pretty pretty neg_typ ] ]
+      in
+      match os with
+      | [] -> M.pretty pretty M.top
+      | [ c ] -> c
+      | os -> List (Atom "&" :: os)
+
+    and pretty =
+      let open Sexp in
+      function
+      | [] -> M.pretty pretty M.bot
+      | [ c ] -> pretty_clause c
+      | t -> List ([ Atom "|" ] @ List.map ~f:pretty_clause t)
 
     let rec simple t : t =
       [
@@ -167,19 +221,6 @@ module Type (M : TypeSystem) = struct
     let top : t = [ top_clause ]
     let typ typ : t = [ { top_clause with pos_typ = typ } ]
     let var x = [ { top_clause with vars = Var.Set.singleton (Var.var x) } ]
-
-    let must_be_top ty =
-      match M.is_top (Fn.const (Sexp.Atom "")) ty with
-      | Ok [] -> true
-      | _ -> false
-
-    let must_be_bot ty =
-      match M.is_bot (Fn.const (Sexp.Atom "")) ty with
-      | Ok [] -> true
-      | _ -> false
-
-    let must_be_sub ty ty' =
-      must_be_bot ty || must_be_top ty' || [%equal: t M.typ] ty ty'
 
     let simplify cs =
       (* Deduplicate *)
@@ -208,15 +249,15 @@ module Type (M : TypeSystem) = struct
       {
         vars = Set.union t.vars t'.vars;
         pos_typ = M.meet t.pos_typ t'.pos_typ;
-        neg_typ = M.meet t.neg_typ t'.neg_typ;
+        neg_typ = M.join t.neg_typ t'.neg_typ;
       }
 
     let negate_clause t =
       List.map (Set.to_list t.vars) ~f:(fun x ->
           { top_clause with vars = Var.Set.singleton (Var.negate x) })
       @ [
-          { bot_clause with pos_typ = t.neg_typ };
-          { bot_clause with neg_typ = t.pos_typ };
+          { top_clause with pos_typ = t.neg_typ };
+          { top_clause with neg_typ = t.pos_typ };
         ]
 
     let meet t t' =
@@ -230,58 +271,22 @@ module Type (M : TypeSystem) = struct
     let%expect_test "normal forms" =
       let var x = var (Type_var.of_string x) in
       let ( + ) = join and ( * ) = meet and ( ! ) = negate in
-      print_s [%message (var "a" |> negate : t)];
+      let sexp_of_t = pretty in
+      let a = var "a" and b = var "b" and c = var "c" in
+      print_s [%message (a : t)];
+      [%expect {| (a a) |}];
+      print_s [%message (a |> negate : t)];
+      [%expect {| ("a |> negate" (~ a)) |}];
+      print_s [%message (!(a + b) : t)];
+      [%expect {| ("!(a + b)" (& (~ a) (~ b))) |}];
+      print_s [%message (!(a + top) : t)];
+      [%expect {| ("!(a + top)" bot) |}];
+      print_s [%message ((a + b) * (b + c) * (c + a) : t)];
+      print_s [%message ((a * b) + (b * c) + (c * a) : t)];
       [%expect
         {|
-        ("(var \"a\") |> negate"
-         (((vars (((var a) (neg true) (app (Drop ()))))) (pos_typ Top) (neg_typ Bot))))
-        |}];
-      print_s [%message (!(var "a" + var "b") : t)];
-      (* ~(a \/ b) = (~a /\ ~b) \/ ~a \/ ~b = (~a /\ ~b) *)
-      [%expect
-        {|
-        ("!((var \"a\") + (var \"b\"))"
-         (((vars
-            (((var a) (neg true) (app (Drop ())))
-             ((var b) (neg true) (app (Drop ())))))
-           (pos_typ Top) (neg_typ Bot))))
-        |}];
-      print_s [%message (!(var "a" + top) : t)];
-      [%expect {| ("!((var \"a\") + top)" ()) |}];
-      print_s
-        [%message
-          ((var "a" + var "b") * (var "b" + var "c") * (var "c" + var "a") : t)];
-      print_s
-        [%message
-          ((var "a" * var "b") + (var "b" * var "c") + (var "c" * var "a") : t)];
-      [%expect
-        {|
-        ("(((var \"a\") + (var \"b\")) * ((var \"b\") + (var \"c\"))) * ((var \"c\") + (var \"a\"))"
-         (((vars
-            (((var a) (neg false) (app (Drop ())))
-             ((var b) (neg false) (app (Drop ())))))
-           (pos_typ Top) (neg_typ Bot))
-          ((vars
-            (((var a) (neg false) (app (Drop ())))
-             ((var c) (neg false) (app (Drop ())))))
-           (pos_typ Top) (neg_typ Bot))
-          ((vars
-            (((var b) (neg false) (app (Drop ())))
-             ((var c) (neg false) (app (Drop ())))))
-           (pos_typ Top) (neg_typ Bot))))
-        ("(((var \"a\") * (var \"b\")) + ((var \"b\") * (var \"c\"))) + ((var \"c\") * (var \"a\"))"
-         (((vars
-            (((var a) (neg false) (app (Drop ())))
-             ((var b) (neg false) (app (Drop ())))))
-           (pos_typ Top) (neg_typ Bot))
-          ((vars
-            (((var a) (neg false) (app (Drop ())))
-             ((var c) (neg false) (app (Drop ())))))
-           (pos_typ Top) (neg_typ Bot))
-          ((vars
-            (((var b) (neg false) (app (Drop ())))
-             ((var c) (neg false) (app (Drop ())))))
-           (pos_typ Top) (neg_typ Bot))))
+        ("((a + b) * (b + c)) * (c + a)" (| (& a b) (& a c) (& b c)))
+        ("((a * b) + (b * c)) + (c * a)" (| (& a b) (& a c) (& b c)))
         |}]
   end
 

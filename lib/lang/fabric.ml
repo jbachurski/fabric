@@ -119,17 +119,19 @@ module Type = struct
   let repr (_ : t) : Repr.t = Atoms [ Box ]
   let unit = Tuple []
 
-  let rec pretty (T t) =
+  let pretty' pretty_t t =
     let open Sexp in
     match t with
-    | Top -> Atom "?"
-    | Bot -> Atom "!"
+    | Top -> Atom "top"
+    | Bot -> Atom "bot"
     | Int -> Atom "int"
     | Float -> Atom "float"
-    | Tuple ts -> List (List.map ~f:pretty ts)
-    | Function (s, t) -> List [ pretty s; Atom "->"; pretty t ]
-    | Array t -> List [ Atom "[]"; pretty t ]
-    | Record fs -> List ([ Atom "{" ] @ Fields.pretty pretty fs @ [ Atom "}" ])
+    | Tuple ts -> List (List.map ~f:pretty_t ts)
+    | Function (s, t) -> List [ pretty_t s; Atom "->"; pretty_t t ]
+    | Array t -> List [ Atom "[]"; pretty_t t ]
+    | Record fs -> List ([ Atom "{" ] @ Fields.pretty pretty_t fs @ [ Atom "}" ])
+
+  let rec pretty (T t) = pretty' pretty t
 
   let unwrap_function = function
     | T (Function (t, t')) -> (t, t')
