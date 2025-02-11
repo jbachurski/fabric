@@ -8,6 +8,7 @@ let next_type_var =
     Type_var.of_string ("$" ^ string_of_int !cnt)
 
 type ('a, 'args) massage = ('a -> Sexp.t) -> 'args -> ('a * 'a) list Or_error.t
+type 'a lattice = { join : 'a -> 'a -> 'a; meet : 'a -> 'a -> 'a }
 
 module type TypeSystem = sig
   type 'a typ [@@deriving sexp, equal, compare]
@@ -22,8 +23,8 @@ module type TypeSystem = sig
   val is_bot : ('a, 'a typ) massage
   val top : 'a typ
   val bot : 'a typ
-  val join : 'a typ -> 'a typ -> 'a typ
-  val meet : 'a typ -> 'a typ -> 'a typ
+  val join : 'a lattice -> 'a typ -> 'a typ -> 'a typ
+  val meet : 'a lattice -> 'a typ -> 'a typ -> 'a typ
 
   module Arrow : sig
     type t = arrow [@@deriving sexp, equal, compare]
@@ -37,7 +38,7 @@ module type TypeSystem = sig
   end
 end
 
-type fabric_arrow = Drop of Label.Set.t
+type fabric_arrow = { records : Lang.Fabric.Type.dir Label.Map.t }
 
 module FabricTypeSystem :
   TypeSystem
@@ -66,6 +67,27 @@ module FabricTypeSystem :
         error_s
           [%message
             "Incompatible record fields" (lower : Sexp.t) (upper : Sexp.t)]
+
+  let field_combine ~tops ~bots ~unrelated f (fd : 'a Field.t)
+      (fd' : 'a Field.t) : 'a Field.t =
+    match (fd, fd') with
+    | Top, t | t, Top -> tops t
+    | Bot, t | t, Bot -> bots t
+    | Absent, Absent -> Absent
+    | Present t, Present t' -> Present (f t t')
+    | _ -> unrelated
+
+  let field_join f fd fd' =
+    field_combine
+      ~tops:(fun _ -> Top)
+      ~bots:(fun t -> t)
+      ~unrelated:Top f fd fd'
+
+  let field_meet f fd fd' =
+    field_combine
+      ~tops:(fun t -> t)
+      ~bots:(fun _ -> Bot)
+      ~unrelated:Bot f fd fd'
 
   let decompose sexp ((lower : 'a typ), (upper : 'a typ)) :
       ('a * 'a) list Or_error.t =
@@ -104,37 +126,71 @@ module FabricTypeSystem :
   let top = Top
   let bot = Bot
 
-  let join (t : 'a typ) (t' : 'a typ) : 'a typ =
+  let combine ~tops ~bots ~unrelated f f' f_fd (t : 'a typ) (t' : 'a typ) :
+      'a typ =
     match (t, t') with
-    | Top, _ | _, Top -> Top
-    | Bot, t | t, Bot -> t
-    | _ -> Top
+    | Top, t | t, Top -> tops t
+    | Bot, t | t, Bot -> bots t
+    | Int, Int -> Int
+    | Float, Float -> Float
+    | Tuple ts, Tuple ts' when List.length ts = List.length ts' ->
+        Tuple (List.map2_exn ~f ts ts')
+    | Function (t1, t1'), Function (t2, t2') -> Function (f' t1 t2, f t1' t2')
+    (* FIXME: array covariance? *)
+    | Array t, Array t' -> Array (f t t')
+    | Record fs, Record fs' -> Record (Fields.lift f_fd fs fs')
+    | _ -> unrelated
 
-  let meet (t : 'a typ) (t' : 'a typ) : 'a typ =
-    match (t, t') with
-    | Bot, _ | _, Bot -> Bot
-    | Top, t | t, Top -> t
-    | _ -> Bot
+  let join f t t' =
+    combine
+      ~tops:(fun _ -> Top)
+      ~bots:(fun t -> t)
+      ~unrelated:Top f.join f.meet (field_join f.join) t t'
+
+  let meet f t t' =
+    combine
+      ~tops:(fun t -> t)
+      ~bots:(fun _ -> Bot)
+      ~unrelated:Bot f.meet f.join (field_meet f.meet) t t'
 
   module Arrow = struct
     open Lang.Fabric.Type
 
-    type t = fabric_arrow = Drop of Label.Set.t
+    type t = fabric_arrow = { records : dir Label.Map.t }
     [@@deriving sexp, equal, compare]
 
-    let id = Drop Label.Set.empty
-    let is_id (Drop s) = Set.is_empty s
-    let compose (Drop ls) (Drop ls') = Drop (Set.union ls ls')
+    let id = { records = Label.Map.empty }
+    let is_id { records } = Map.is_empty records
 
-    let apply (Drop ls) = function
+    let compose { records } { records = records' } =
+      {
+        records =
+          Map.merge records records' ~f:(fun ~key:_ -> function
+            | `Left t | `Right t | `Both (t, _) -> Some t);
+      }
+
+    let apply { records } = function
       | Record fs ->
-          Record (Set.fold ls ~init:fs ~f:(fun fs l -> Fields.update fs l Top))
+          Record
+            (Map.fold records ~init:fs ~f:(fun ~key:l ~data fs ->
+                 Fields.update fs l (match data with Top -> Top | Bot -> Bot)))
       | t -> t
 
-    let left_adjoint = function Drop _ -> failwith "Arrow.left_adjoint: Drop"
+    let left_adjoint { records } =
+      {
+        records =
+          Map.map records ~f:(function
+            | Top -> (Bot : dir)
+            | Bot -> failwith "No left adjoint for field morphism to Bot");
+      }
 
-    let right_adjoint = function
-      | Drop _ -> failwith "Arrow.right_adjoint: Drop"
+    let right_adjoint { records } =
+      {
+        records =
+          Map.map records ~f:(function
+            | Bot -> (Top : dir)
+            | Top -> failwith "No right adjoint for field morphism to Top");
+      }
   end
 end
 
@@ -245,12 +301,21 @@ module Type (M : TypeSystem) = struct
             neg_typ = M.Arrow.apply a neg_typ;
           })
 
-    let meet_clause t t' =
+    let join t t' = t @ t' |> simplify
+
+    let rec meet_clause t t' =
       {
         vars = Set.union t.vars t'.vars;
-        pos_typ = M.meet t.pos_typ t'.pos_typ;
-        neg_typ = M.join t.neg_typ t'.neg_typ;
+        pos_typ = M.meet lattice t.pos_typ t'.pos_typ;
+        neg_typ = M.join lattice t.neg_typ t'.neg_typ;
       }
+
+    and meet t t' =
+      List.cartesian_product t t'
+      |> List.map ~f:(fun (c, c') -> meet_clause c c')
+      |> simplify
+
+    and lattice = { join; meet }
 
     let negate_clause t =
       List.map (Set.to_list t.vars) ~f:(fun x ->
@@ -260,12 +325,6 @@ module Type (M : TypeSystem) = struct
           { top_clause with neg_typ = t.pos_typ };
         ]
 
-    let meet t t' =
-      List.cartesian_product t t'
-      |> List.map ~f:(fun (c, c') -> meet_clause c c')
-      |> simplify
-
-    let join t t' = t @ t' |> simplify
     let negate t = List.map t ~f:negate_clause |> List.fold ~init:top ~f:meet
 
     let%expect_test "normal forms" =
@@ -297,10 +356,13 @@ module Type (M : TypeSystem) = struct
       | Var of Type_var.t
       | Typ of t typ
       | Apply of M.Arrow.t * t
-      | Extreme of dir
       | Combine of dir * t * t
       | Complement of t
     [@@deriving sexp, equal, compare]
+
+    let join t t' = Combine (Top, t, t')
+    let meet t t' = Combine (Bot, t, t')
+    let lattice = { join; meet }
   end
 
   let var x = Alg.Var x
@@ -313,8 +375,6 @@ module Type (M : TypeSystem) = struct
     | Var x -> var x
     | Typ t -> typ (map ~f:normalize t)
     | Apply (a, t) -> apply a (normalize t)
-    | Extreme Top -> top
-    | Extreme Bot -> bot
     | Combine (Top, t, t') -> join (normalize t) (normalize t')
     | Combine (Bot, t, t') -> meet (normalize t) (normalize t')
     | Complement t -> negate (normalize t)
@@ -405,7 +465,6 @@ module Solver (M : TypeSystem) = struct
   (* Lift back to general form *)
   let un t : Alg.t =
     match t with
-    | `Extreme dir -> Extreme dir
     | `Var x -> Var x
     | `Typ t -> Typ t
     | `Combine (dir, t, t') -> Combine (dir, t, t')
@@ -418,7 +477,6 @@ module Solver (M : TypeSystem) = struct
      mainly for complements and arrows *)
   let rec simp (t : Alg.t) =
     match t with
-    | Extreme dir -> `Extreme dir
     | Var x -> `Var x
     | Typ t -> `Typ t
     | Combine (dir, t, t') -> `Combine (dir, t, t')
@@ -426,12 +484,10 @@ module Solver (M : TypeSystem) = struct
     | Complement (Complement t) -> simp t
     | Complement (Combine (dir, t, t')) ->
         `Combine (inv dir, Complement t, Complement t')
-    | Complement (Extreme dir) -> `Extreme (inv dir)
     | Complement (Var x) -> `Complement (`Var x)
     | Complement (Typ t) -> `Complement (`Typ t)
     | Complement (Apply (a, t)) -> simp (Apply (a, Complement t))
     (* Arrows *)
-    | Apply (_, Extreme dir) -> `Extreme dir
     | Apply (a, Apply (a', t)) -> simp (Apply (M.Arrow.compose a a', t))
     | Apply (a, Combine (dir, t, t')) ->
         `Combine (dir, Apply (a, t), Apply (a, t'))
@@ -447,19 +503,13 @@ module Solver (M : TypeSystem) = struct
     match x with `Var x -> Var x | `VarComplement x -> Complement (Var x)
 
   let rec atomize ~lower ~upper : bound list Or_error.t =
+    let join = M.join Alg.lattice in
+    let meet = M.meet Alg.lattice in
     match (simp lower, simp upper) with
     (* Atomic bounds *)
     | `Var x1, `Var x2 -> Ok [ Lower (Var x1, x2); Upper (x1, Var x2) ]
     | `Var x, t2 -> Ok [ Upper (x, un t2) ]
     | t1, `Var x -> Ok [ Lower (un t1, x) ]
-    (* Extremes *)
-    | `Extreme Bot, _ -> Ok []
-    | _, `Extreme Top -> Ok []
-    | `Extreme Top, `Extreme Bot -> error_s [%message "top <= bot"]
-    | `Typ t1, `Extreme Bot ->
-        M.is_bot Alg.sexp_of_t t1 |> atomize_decomposition
-    | `Extreme Top, `Typ t2 ->
-        M.is_top Alg.sexp_of_t t2 |> atomize_decomposition
     (* Decompose inequality on type constructors *)
     | `Typ lower, `Typ upper ->
         M.decompose Alg.sexp_of_t (lower, upper) |> atomize_decomposition
@@ -472,16 +522,12 @@ module Solver (M : TypeSystem) = struct
     (* Complements *)
     | `Complement t1, `Complement t2 -> un t2 *<=* un t1
     | `Complement (`Typ t1), `Typ t2 ->
-        M.is_top Alg.sexp_of_t (M.join t1 t2) |> atomize_decomposition
+        M.is_top Alg.sexp_of_t (join t1 t2) |> atomize_decomposition
     | `Typ t1, `Complement (`Typ t2) ->
-        M.is_bot Alg.sexp_of_t (M.meet t1 t2) |> atomize_decomposition
+        M.is_bot Alg.sexp_of_t (meet t1 t2) |> atomize_decomposition
     | t1, `Complement (`Var x) -> Var x *<=* Complement (un t1)
     | `Complement (`Var x), t2 -> Complement (un t2) *<=* Var x
-    | `Extreme Top, `Complement t2 -> un t2 *<=* Extreme Bot
-    | `Complement t1, `Extreme Bot -> Extreme Top *<=* un t1
     (* Arrows *)
-    | `Extreme dir, `Apply (_, t2) -> Extreme dir *<=* unv t2
-    | `Apply (_, t1), `Extreme dir -> unv t1 *<=* Extreme dir
     (* This case would trigger nondeterministically for both of the latter reductions,
        so we produce both the adjoint-equivalent bounds *)
     | `Apply (a1, t1), `Apply (a2, t2) ->
@@ -531,6 +577,9 @@ module FabricTyper = struct
   let rec go (env : Alg.t Var.Map.t) : t -> Alg.t Constrained.t =
     let open Constrained in
     let return_typ (t : Alg.t Lang.Fabric.Type.typ) = return (typ t) in
+    let field_drop l =
+      { records = Label.Map.singleton l (Top : Lang.Fabric.Type.dir) }
+    in
     function
     | Var (x, _) -> return (Map.find_exn env (Var.of_string x))
     | Lit _ -> return_typ Int
@@ -573,7 +622,7 @@ module FabricTyper = struct
         let* e = go env e and* e' = go env e' in
         let field fd = Label.Map.singleton f fd in
         let* () = e' <: typ (Record (field Field.Absent |> Fields.open_))
-        and* () = r <: apply (Drop (Label.Set.singleton f)) e'
+        and* () = r <: apply (field_drop f) e'
         and* () = r <: typ (Record (field (Field.Present e) |> Fields.open_)) in
         return r
     | Op (e, "", e') ->
@@ -676,7 +725,7 @@ let%expect_test "" =
          (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
         (Flow (sub (Var $8))
          (sup
-          (Apply (Drop (foo))
+          (Apply ((records ((foo Top))))
            (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent)))))))
         (Flow (sub (Var $8))
          (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
@@ -696,7 +745,7 @@ let%expect_test "" =
          (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
         (Flow (sub (Var $9))
          (sup
-          (Apply (Drop (foo))
+          (Apply ((records ((foo Top))))
            (Typ (Record ((m ((bar (Present (Typ Int))))) (rest Absent)))))))
         (Flow (sub (Var $9))
          (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
@@ -716,12 +765,12 @@ let%expect_test "" =
        (All
         ((Flow (sub (Var $10))
           (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
-         (Flow (sub (Var $11)) (sup (Apply (Drop (foo)) (Var $10))))
+         (Flow (sub (Var $11)) (sup (Apply ((records ((foo Top)))) (Var $10))))
          (Flow (sub (Var $11))
           (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))))))
     (bounds
      (Ok
       ((Upper $10 (Typ (Record ((m ((foo Absent))) (rest Top)))))
-       (Upper $11 (Apply (Drop (foo)) (Var $10)))
+       (Upper $11 (Apply ((records ((foo Top)))) (Var $10)))
        (Upper $11 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))
     |}]

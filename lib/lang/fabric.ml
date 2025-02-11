@@ -24,7 +24,7 @@ module Repr = struct
 end
 
 module Type = struct
-  type dir = Top | Bot [@@deriving compare, sexp]
+  type dir = Top | Bot [@@deriving equal, compare, sexp]
 
   let inv = function Top -> Bot | Bot -> Top
 
@@ -40,7 +40,8 @@ module Type = struct
   end
 
   module Fields : sig
-    type 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
+    type rest = [ `Absent | `Bot | `Top ]
+    type 'a t = { m : 'a Field.t Label.Map.t; rest : rest }
 
     val equal : ('a -> 'a -> bool) -> 'a t -> 'a t -> bool
     val compare : ('a -> 'a -> int) -> 'a t -> 'a t -> int
@@ -50,14 +51,24 @@ module Type = struct
     val closed : 'a Field.t Label.Map.t -> 'a t
     val open_ : 'a Field.t Label.Map.t -> 'a t
     val map : f:('a -> 'b) -> 'a t -> 'b t
+    val lift : ('a Field.t -> 'b Field.t -> 'c Field.t) -> 'a t -> 'b t -> 'c t
     val update : 'a t -> Label.t -> 'a Field.t -> 'a t
     val field : 'a t -> Label.t -> 'a Field.t
     val subs : 'a t -> 'b t -> ('a Field.t * 'b Field.t) Label.Map.t
   end = struct
-    type 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
+    type rest = [ `Absent | `Bot | `Top ] [@@deriving sexp, equal, compare]
+
+    and 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
     [@@deriving sexp, equal, compare]
 
     let un = function `Absent -> Field.Absent | `Bot -> Bot | `Top -> Top
+
+    let nu = function
+      | Field.Absent -> `Absent
+      | Bot -> `Bot
+      | Top -> `Top
+      | Present _ ->
+          failwith "Record cannot be marked as having all fields present"
 
     let pretty a { m; rest } =
       let open Sexp in
@@ -91,6 +102,12 @@ module Type = struct
         | `Both (t, t') -> Some (t, t')
         | `Left t -> Some (t, un rest')
         | `Right t' -> Some (un rest, t'))
+
+    let lift f first second =
+      {
+        m = subs first second |> Map.map ~f:(fun (fd, fd') -> f fd fd');
+        rest = nu (f (un first.rest) (un second.rest));
+      }
   end
 
   type 't typ =
