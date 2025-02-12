@@ -49,7 +49,7 @@ let paren expr = wrap "(" ")" expr
 let brack expr = wrap "[" "]" expr
 let brace expr = wrap "{" "}" expr
 
-let sep_list' ~sep ~many expr =
+let sep_list1 ~sep expr =
   let+ es =
     many
       (let+ e = expr and+ () = special sep in
@@ -58,12 +58,11 @@ let sep_list' ~sep ~many expr =
   match e with None -> es | Some e -> es @ [ e ]
 
 (* requires at least one comma in the list *)
-let sep_list ~sep expr = sep_list' ~sep ~many:many1 expr <|> return []
-let sep_list0 ~sep expr = sep_list' ~sep ~many expr
+let sep_list ~sep expr = sep_list1 ~sep expr <|> return []
 let prim_type = keyword "int" *> return (Type.T Int)
 
 let record_type type_ =
-  sep_list0 ~sep:","
+  sep_list ~sep:","
     (let+ l = name and+ () = special ":" and+ e = type_ in
      (Label.of_string l, Type.Field.Present e))
   |> brace
@@ -154,7 +153,7 @@ let tuple expr =
   Tuple es
 
 let cons expr =
-  sep_list0 ~sep:","
+  sep_list ~sep:","
     (let+ l = name and+ () = special ":" and+ e = expr in
      (l, e))
   |> brace
@@ -186,8 +185,27 @@ let shape expr =
   Shape e
 
 let proj expr =
-  let+ e = atomic expr and+ () = special "." and+ l = name in
-  Proj (e, l)
+  let+ e = atomic expr
+  and+ ls =
+    many1
+      (let+ () = special "." and+ l = name in
+       l)
+  in
+  List.fold ls ~init:e ~f:(fun e l -> Proj (e, l))
+
+let restrict expr =
+  let+ e = atomic expr and+ () = special "\\" and+ l = name in
+  Restrict (e, l)
+
+let extend expr =
+  brace
+    (let+ ls =
+       sep_list ~sep:","
+         (let+ l = name and+ () = special ":" and+ e = expr in
+          (l, e))
+     and+ () = special "|"
+     and+ e' = expr in
+     List.fold ls ~init:e' ~f:(fun e' (l, e) -> Extend (l, e, e')))
 
 let intrinsic expr =
   let+ () = skip_while Char.is_whitespace
@@ -205,6 +223,8 @@ let expr =
           arr expr;
           shape expr;
           proj expr;
+          restrict expr;
+          extend expr;
           intrinsic expr;
           fun_ expr;
           atomic expr;
@@ -296,4 +316,13 @@ let%expect_test "parse expr" =
      (let (tab : ([] ([] ({ (prod int) (sum int) })))) =
       ([ i : 5 ] => ([ j : 5 ] => ({ (sum (+ i j)) (prod (* i j)) }))) in
       (,)))
+    |}];
+  pparse "r => {b: r.b.not() | r}";
+  [%expect {| (Ok (r => ({ b = (((r . b) . not) (,)) | r }))) |}];
+  pparse "r => {prev: r.next, next: r.prev + r.next | {prev: 5, next: 8}}";
+  [%expect {|
+    (Ok
+     (r =>
+      ({ next = (+ (r . prev) (r . next)) |
+       ({ prev = (r . next) | ({ (prev 5) (next 8) }) }) })))
     |}]

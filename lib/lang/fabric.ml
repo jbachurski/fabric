@@ -185,6 +185,7 @@ module Expr = struct
     | Shape of t
     | Cons of (string * t) list
     | Proj of t * string
+    | Restrict of t * string
     | Extend of string * t * t
     | Intrinsic of string * t
     | Op of t * string * t
@@ -229,6 +230,7 @@ module Expr = struct
           @ List.map fs ~f:(fun (l, t) -> List [ Atom l; pretty t ])
           @ [ Atom "}" ])
     | Proj (t, l) -> List [ pretty t; Atom "."; Atom l ]
+    | Restrict (t, l) -> List [ pretty t; Atom "\\"; Atom l ]
     | Extend (f, e, e') ->
         List
           [
@@ -262,6 +264,7 @@ module Expr = struct
         | Shape e -> Shape (go0 e)
         | Cons fs -> Cons (List.map fs ~f:(fun (l, e) -> (l, go0 e)))
         | Proj (e, l) -> Proj (go0 e, l)
+        | Restrict (e, l) -> Restrict (go0 e, l)
         | Extend (f, e, e') -> Extend (f, go0 e, go0 e')
         | Intrinsic (f, e) -> Intrinsic (f, go0 e)
         | Op (e, o, e') -> Op (go0 e, o, go0 e')
@@ -283,6 +286,7 @@ module Expr = struct
     | Cons fs ->
         List.map fs ~f:(fun (_, e) -> !!e) |> List.fold_left ~init:z ~f:( <|> )
     | Proj (e, _) -> !!e
+    | Restrict (e, _) -> !!e
     | Extend (_f, e, e') -> !!e <|> !!e'
     | Intrinsic (_, e) -> !!e
     | Op (e, _o, e') -> !!e <|> !!e'
@@ -317,6 +321,7 @@ module Expr = struct
                   (Label.of_string l, Type.Field.Present (type_expr e)))
              |> Label.Map.of_alist_exn |> Type.Fields.closed))
     | Proj (e, l) -> Type.unwrap_record_field (type_expr e) (Label.of_string l)
+    | Restrict (_e, _l) -> T Top
     | Extend (_f, _e, _e') -> T Top
     | Intrinsic ("print", _) -> T Type.unit
     | Intrinsic ("print_i32", _) -> T Type.unit

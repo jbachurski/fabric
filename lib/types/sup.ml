@@ -616,6 +616,14 @@ module FabricTyper = struct
                   |> Fields.open_))
         in
         return f_
+    | Restrict (e, f) ->
+        let f = Label.of_string f in
+        let$ r = () in
+        let* e = go env e in
+        let field fd = Label.Map.singleton f fd in
+        let* () = r <: apply (field_drop f) e
+        and* () = r <: typ (Record (field Field.Absent |> Fields.open_)) in
+        return r
     | Extend (f, e, e') ->
         let f = Label.of_string f in
         let$ r = () in
@@ -773,4 +781,39 @@ let%expect_test "" =
       ((Upper $10 (Typ (Record ((m ((foo Absent))) (rest Top)))))
        (Upper $11 (Apply ((records ((foo Top)))) (Var $10)))
        (Upper $11 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))
+    |}];
+  test ("r => {b: r.b.not() | r}" |> Syntax.parse_exn);
+  [%expect {|
+    (t (Typ (Function (Var $12) (Var $13))))
+    (c
+     (With $12
+      (With $13
+       (All
+        ((With $14
+          (With $15
+           (All
+            ((With $16
+              (All
+               ((With $17
+                 (Flow (sub (Var $12))
+                  (sup (Typ (Record ((m ((b (Present (Var $17))))) (rest Top)))))))
+                (Flow (sub (Var $17))
+                 (sup
+                  (Typ (Record ((m ((not (Present (Var $16))))) (rest Top)))))))))
+             (Flow (sub (Var $16)) (sup (Typ (Function (Var $14) (Var $15)))))
+             (Flow (sub (Typ (Tuple ()))) (sup (Var $14)))))))
+         (Flow (sub (Var $12))
+          (sup (Typ (Record ((m ((b Absent))) (rest Top))))))
+         (Flow (sub (Var $13)) (sup (Apply ((records ((b Top)))) (Var $12))))
+         (Flow (sub (Var $13))
+          (sup (Typ (Record ((m ((b (Present (Var $15))))) (rest Top)))))))))))
+    (bounds
+     (Ok
+      ((Upper $12 (Typ (Record ((m ((b (Present (Var $17))))) (rest Top)))))
+       (Upper $17 (Typ (Record ((m ((not (Present (Var $16))))) (rest Top)))))
+       (Upper $16 (Typ (Function (Var $14) (Var $15))))
+       (Lower (Typ (Tuple ())) $14)
+       (Upper $12 (Typ (Record ((m ((b Absent))) (rest Top)))))
+       (Upper $13 (Apply ((records ((b Top)))) (Var $12)))
+       (Upper $13 (Typ (Record ((m ((b (Present (Var $15))))) (rest Top))))))))
     |}]
