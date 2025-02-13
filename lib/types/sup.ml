@@ -29,6 +29,7 @@ module type TypeSystem = sig
   module Arrow : sig
     type t = arrow [@@deriving sexp, equal, compare]
 
+    val pretty : arrow -> Sexp.t
     val id : t
     val is_id : t -> bool
     val compose : t -> t -> t
@@ -153,11 +154,55 @@ module FabricTypeSystem :
       ~bots:(fun _ -> Bot)
       ~unrelated:Bot f.meet f.join (field_meet f.meet) t t'
 
+  let%expect_test "Fabric type lattice" =
+    let rec meet' (T t) (T t') = T (meet lattice t t')
+    and join' (T t) (T t') = T (join lattice t t')
+    and lattice = { meet = meet'; join = join' } in
+    let join = join lattice and meet = meet lattice in
+    let print t = print_s (Lang.Fabric.Type.pretty t) in
+    print (T Int);
+    [%expect {| int |}];
+    print (T (join Int Float));
+    [%expect {| top |}];
+    let rcd k v = Record (Fields.open_ Label.(Map.singleton (of_string k) v)) in
+    print (T (meet (rcd "foo" (Present (T Int))) (rcd "bar" (Present (T Int)))));
+    [%expect {| ({ (bar int) (foo int) | ? }) |}];
+    print
+      (T
+         (meet
+            (Record
+               (Label.Map.of_alist_exn
+                  [
+                    (Label.of_string "foo", Field.Top);
+                    (Label.of_string "bar", Present (T Int));
+                  ]
+               |> Fields.closed))
+            (rcd "foo" (Present (T Int)))));
+    [%expect {| ({ (bar int) (foo int) }) |}];
+    ()
+
   module Arrow = struct
     open Lang.Fabric.Type
 
     type t = fabric_arrow = { records : dir Label.Map.t }
     [@@deriving sexp, equal, compare]
+
+    let pretty { records } =
+      let drops, lifts =
+        Map.partition_map records ~f:(function
+          | Top -> First ()
+          | Bot -> Second ())
+      in
+
+      Sexp.List
+        (List.concat
+           [
+             (if Map.is_empty drops then []
+              else
+                [ Sexp.Atom "drop"; Label.Set.(of_map_keys drops |> sexp_of_t) ]);
+             (if Map.is_empty lifts then []
+              else [ Atom "lift"; Label.Set.(of_map_keys lifts |> sexp_of_t) ]);
+           ])
 
     let id = { records = Label.Map.empty }
     let is_id { records } = Map.is_empty records
@@ -214,6 +259,7 @@ module type TypeSystem1 = sig
   module Arrow : sig
     type t = arrow [@@deriving sexp, equal, compare]
 
+    val pretty : arrow -> Sexp.t
     val id : t
     val is_id : t -> bool
     val compose : t -> t -> t
@@ -221,7 +267,10 @@ module type TypeSystem1 = sig
   end
 end
 
-module FabricTypeSystem1 : TypeSystem1 = struct
+module FabricTypeSystem1 :
+  TypeSystem1
+    with type 'a typ = 'a Lang.Fabric.Type.typ
+     and type arrow = fabric_arrow = struct
   include FabricTypeSystem
 
   let join_token = "|"
@@ -240,6 +289,8 @@ module type NF0 = sig
 
     type t = T.t = { var : Type_var.t; neg : bool; app : arrow }
     [@@deriving sexp, equal, compare]
+
+    val negate : t -> t
 
     module Set : Set.S with type Elt.t = t
   end
@@ -263,8 +314,10 @@ module type NF = sig
   val var : Type_var.t -> t
   val join : t -> t -> t
   val meet : t -> t -> t
+  val combine_clause : clause -> clause -> clause
   val negate : t -> t
   val apply : arrow -> t -> t
+  val apply_clause : arrow -> clause -> clause
   val lattice : t lattice
 
   val interpret :
@@ -296,8 +349,8 @@ module DNF (M : TypeSystem1) :
       match (neg, M.Arrow.is_id app) with
       | false, true -> x
       | true, true -> List [ Atom "~"; x ]
-      | false, false -> List [ M.Arrow.sexp_of_t app; x ]
-      | true, false -> List [ Atom "~"; M.Arrow.sexp_of_t app; x ]
+      | false, false -> List [ M.Arrow.pretty app; x ]
+      | true, false -> List [ Atom "~"; M.Arrow.pretty app; x ]
 
     let var x = { var = x; neg = false; app = M.Arrow.id }
     let negate t = { t with neg = not t.neg }
@@ -359,7 +412,37 @@ module DNF (M : TypeSystem1) :
   let bot : t = []
   let top : t = [ top_clause ]
 
-  let simplify cs =
+  let apply_clause a { vars; pos_typ; neg_typ } =
+    {
+      vars = Var.Set.map vars ~f:(fun x -> Var.apply a x);
+      pos_typ = M.Arrow.apply a pos_typ;
+      neg_typ = M.Arrow.apply a neg_typ;
+    }
+
+  let typ pos_typ : t = [ { top_clause with pos_typ } ]
+  let not_typ neg_typ : t = [ { top_clause with neg_typ } ]
+  let var x = [ { top_clause with vars = Var.Set.singleton (Var.var x) } ]
+
+  let rec simplify cs =
+    let cs, pos_typs =
+      List.partition_map cs ~f:(fun c ->
+          if Set.is_empty c.vars && must_be_bot c.neg_typ then Second c.pos_typ
+          else First c)
+    in
+    let cs, neg_typs =
+      List.partition_map cs ~f:(fun c ->
+          if Set.is_empty c.vars && must_be_top c.pos_typ then Second c.neg_typ
+          else First c)
+    in
+
+    let pos_typ =
+      List.reduce pos_typs ~f:(M.join lattice) |> Option.value ~default:M.bot
+    in
+    let neg_typ =
+      List.reduce neg_typs ~f:(M.meet lattice) |> Option.value ~default:M.top
+    in
+    let cs = cs @ typ pos_typ @ not_typ neg_typ in
+
     (* Deduplicate *)
     List.dedup_and_sort cs ~compare:compare_clause
     (* Eliminate clauses which are trivially bottom *)
@@ -373,24 +456,14 @@ module DNF (M : TypeSystem1) :
                && must_be_sub c.pos_typ c'.pos_typ
                && must_be_sub c'.neg_typ c.neg_typ)
            |> not)
+    (* Remove clauses with both a variable and its negation *)
     |> List.filter ~f:(fun c ->
            Set.exists c.vars ~f:(fun x -> Set.mem c.vars (Var.negate x)) |> not)
 
-  let typ typ : t = [ { top_clause with pos_typ = typ } ] |> simplify
-  let var x = [ { top_clause with vars = Var.Set.singleton (Var.var x) } ]
+  and apply a t = List.map t ~f:(apply_clause a) |> simplify
+  and join t t' = t @ t' |> simplify
 
-  let apply a t =
-    List.map t ~f:(fun { vars; pos_typ; neg_typ } ->
-        {
-          vars = Var.Set.map vars ~f:(fun x -> Var.apply a x);
-          pos_typ = M.Arrow.apply a pos_typ;
-          neg_typ = M.Arrow.apply a neg_typ;
-        })
-    |> simplify
-
-  let join t t' = t @ t' |> simplify
-
-  let rec meet_clause t t' =
+  and meet_clause t t' =
     {
       vars = Set.union t.vars t'.vars;
       pos_typ = M.meet lattice t.pos_typ t'.pos_typ;
@@ -403,6 +476,8 @@ module DNF (M : TypeSystem1) :
     |> simplify
 
   and lattice = { join; meet }
+
+  let combine_clause = meet_clause
 
   let negate_clause t =
     List.map (Set.to_list t.vars) ~f:(fun x ->
@@ -428,8 +503,10 @@ module DNF (M : TypeSystem1) :
     go
 end
 
+module FabricDNF = DNF (FabricTypeSystem1)
+
 let%expect_test "DNF" =
-  let open DNF (FabricTypeSystem1) in
+  let open FabricDNF in
   let var x = var (Type_var.of_string x) in
   let ( + ) = join and ( * ) = meet and ( ! ) = negate in
   let sexp_of_t = pretty in
@@ -448,7 +525,26 @@ let%expect_test "DNF" =
     {|
   ("((a + b) * (b + c)) * (c + a)" (| (& a b) (& a c) (& b c)))
   ("((a * b) + (b * c)) + (c * a)" (| (& a b) (& a c) (& b c)))
-  |}]
+  |}];
+  print_s [%message (meet (typ Int) (typ Float) : t)];
+  [%expect {| ("meet (typ Int) (typ Float)" bot) |}];
+  print_s [%message (join (typ Int) (typ Float) : t)];
+  [%expect {| ("join (typ Int) (typ Float)" top) |}];
+  let rcd ?(closed = false) kvs =
+    typ
+      Lang.Fabric.Type.(
+        Record
+          (List.map kvs ~f:(fun (k, v) -> (Label.of_string k, v))
+          |> Label.Map.of_alist_exn
+          |> if closed then Fields.closed else Fields.open_))
+  in
+  print_s
+    [%sexp
+      (meet
+         (rcd [ ("foo", Present (typ Int)) ])
+         (rcd ~closed:true [ ("foo", Top); ("bar", Present (typ Int)) ])
+        : t)];
+  [%expect {| ({ (bar int) (foo int) }) |}]
 
 module CNF (M : TypeSystem1) :
   NF with type 't typ := 't M.typ and type arrow := M.Arrow.t = struct
@@ -482,23 +578,27 @@ module CNF (M : TypeSystem1) :
   let top = T.bot
   and bot = T.top
 
-  let typ = T.typ
-  let var = T.var
-
   let join = T.meet
   and meet = T.join
-  and lattice = { join = T.lattice.meet; meet = T.lattice.join }
-
-  let negate = T.negate
-  let apply = T.apply
+  and lattice = { join; meet }
 
   let interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply t =
     T.interpret ~top:bot ~bot:top ~typ ~var ~join:meet ~meet:join ~negate ~apply
       t
 end
 
+module FabricCNF = CNF (FabricTypeSystem1)
+
+let fabric_cnf_to_dnf t =
+  let open FabricDNF in
+  FabricCNF.interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply t
+
+let fabric_dnf_to_cnf t =
+  let open FabricCNF in
+  FabricDNF.interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply t
+
 let%expect_test "CNF" =
-  let open CNF (FabricTypeSystem1) in
+  let open FabricCNF in
   let var x = var (Type_var.of_string x) in
   let ( + ) = join and ( * ) = meet and ( ! ) = negate in
   let sexp_of_t = pretty in
@@ -512,20 +612,40 @@ let%expect_test "CNF" =
   print_s [%message (!(a + top) : t)];
   [%expect {| ("!(a + top)" bot) |}];
   print_s [%message ((a + b) * (b + c) * (c + a) : t)];
-  [%expect {| ("((a + b) * (b + c)) * (c + a)" (& (| a b) (| a c) (| b c))) |}];
   print_s [%message ((a * b) + (b * c) + (c * a) : t)];
-  [%expect {| ("((a * b) + (b * c)) + (c * a)" (& (| a b) (| a c) (| b c))) |}]
-
-module FabricCNF = CNF (FabricTypeSystem1)
-module FabricDNF = DNF (FabricTypeSystem1)
-
-let fabric_cnf_to_dnf t =
-  let open FabricDNF in
-  FabricCNF.interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply t
-
-let fabric_dnf_to_cnf t =
-  let open FabricCNF in
-  FabricDNF.interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply t
+  [%expect
+    {|
+    ("((a + b) * (b + c)) * (c + a)" (& (| a b) (| a c) (| b c)))
+    ("((a * b) + (b * c)) + (c * a)" (& (| a b) (| a c) (| b c)))
+    |}];
+  print_s [%message (meet (typ Int) (typ Float) : t)];
+  [%expect {| ("meet (typ Int) (typ Float)" bot) |}];
+  print_s [%message (join (typ Int) (typ Float) : t)];
+  [%expect {| ("join (typ Int) (typ Float)" top) |}];
+  let rcd ?(closed = false) kvs =
+    typ
+      Lang.Fabric.Type.(
+        Record
+          (List.map kvs ~f:(fun (k, v) -> (Label.of_string k, v))
+          |> Label.Map.of_alist_exn
+          |> if closed then Fields.closed else Fields.open_))
+  in
+  print_s
+    [%sexp
+      (meet
+         (rcd [ ("foo", Present (typ Int)) ])
+         (rcd ~closed:true [ ("foo", Top); ("bar", Present (typ Int)) ])
+        : t)];
+  [%expect {| ({ (bar int) (foo int) }) |}];
+  print_s
+    [%sexp
+      (FabricDNF.meet
+         (rcd [ ("foo", Present (typ Int)) ] |> fabric_cnf_to_dnf)
+         (rcd ~closed:true [ ("foo", Top); ("bar", Present (typ Int)) ]
+         |> fabric_cnf_to_dnf)
+       |> fabric_dnf_to_cnf
+        : t)];
+  [%expect {| ({ (bar int) (foo int) }) |}]
 
 let%expect_test "NF duality" =
   let var x = FabricDNF.var (Type_var.of_string x) in
@@ -585,21 +705,29 @@ module Type (M : TypeSystem) = struct
     let join t t' = Combine (Top, t, t')
     let meet t t' = Combine (Bot, t, t')
     let lattice = { join; meet }
+
+    let rec interpret ~var ~typ ~join ~meet ~negate ~apply t =
+      let go = interpret ~var ~typ ~join ~meet ~negate ~apply in
+      match t with
+      | Var x -> var x
+      | Typ t -> typ (map ~f:go t)
+      | Apply (a, t) -> apply a (go t)
+      | Combine (Top, t, t') -> join (go t) (go t')
+      | Combine (Bot, t, t') -> meet (go t) (go t')
+      | Complement t -> negate (go t)
   end
 
   let var x = Alg.Var x
   let typ t = Alg.Typ t
   let apply a t = Alg.Apply (a, t)
 
-  let rec dnf : Alg.t -> DNF.t =
+  let dnf =
     let open DNF in
-    function
-    | Var x -> var x
-    | Typ t -> typ (map ~f:dnf t)
-    | Apply (a, t) -> apply a (dnf t)
-    | Combine (Top, t, t') -> join (dnf t) (dnf t')
-    | Combine (Bot, t, t') -> meet (dnf t) (dnf t')
-    | Complement t -> negate (dnf t)
+    Alg.interpret ~var ~typ ~join ~meet ~negate ~apply
+
+  let cnf =
+    let open CNF in
+    Alg.interpret ~var ~typ ~join ~meet ~negate ~apply
 
   let dnf_to_cnf =
     let open CNF in
@@ -608,6 +736,30 @@ module Type (M : TypeSystem) = struct
   let cnf_to_dnf =
     let open DNF in
     CNF.interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply
+
+  let negate_dnf_clause_into_cnf (c : DNF.clause) : CNF.clause =
+    {
+      vars =
+        CNF.Var.Set.map
+          ~f:(fun x ->
+            let DNF.Var.{ var; neg; app } = DNF.Var.negate x in
+            { var; neg; app })
+          c.vars;
+      pos_typ = M.map ~f:dnf_to_cnf c.neg_typ;
+      neg_typ = M.map ~f:dnf_to_cnf c.pos_typ;
+    }
+
+  let negate_cnf_clause_into_dnf (c : CNF.clause) : DNF.clause =
+    {
+      vars =
+        DNF.Var.Set.map
+          ~f:(fun x ->
+            let CNF.Var.{ var; neg; app } = CNF.Var.negate x in
+            { var; neg; app })
+          c.vars;
+      pos_typ = M.map ~f:cnf_to_dnf c.neg_typ;
+      neg_typ = M.map ~f:cnf_to_dnf c.pos_typ;
+    }
 end
 
 module Constraint = struct
@@ -677,7 +829,9 @@ end
 module Solver (M : TypeSystem) = struct
   open Type (M)
 
-  type bound = Lower of Alg.t * Type_var.t | Upper of Type_var.t * Alg.t
+  type bound =
+    | Lower of DNF.clause * Type_var.t
+    | Upper of Type_var.t * CNF.clause
   [@@deriving sexp]
 
   type dir = Alg.dir = Bot | Top
@@ -687,118 +841,83 @@ module Solver (M : TypeSystem) = struct
 
   let inv = function Top -> Bot | Bot -> Top
 
-  (* Lift back to general form *)
-  let un t : Alg.t =
-    match t with
-    | `Var x -> Var x
-    | `Typ t -> Typ t
-    | `Combine (dir, t, t') -> Combine (dir, t, t')
-    | `Complement (`Var x) -> Complement (Var x)
-    | `Complement (`Typ t) -> Complement (Typ t)
-    | `Apply (a, `Var x) -> Apply (a, Var x)
-    | `Apply (a, `VarComplement x) -> Apply (a, Complement (Var x))
-
-  (* Simplify to reduce the number of possible cases, 
-     mainly for complements and arrows *)
-  let rec simp (t : Alg.t) =
-    match t with
-    | Var x -> `Var x
-    | Typ t -> `Typ t
-    | Combine (dir, t, t') -> `Combine (dir, t, t')
-    (* Complements *)
-    | Complement (Complement t) -> simp t
-    | Complement (Combine (dir, t, t')) ->
-        `Combine (inv dir, Complement t, Complement t')
-    | Complement (Var x) -> `Complement (`Var x)
-    | Complement (Typ t) -> `Complement (`Typ t)
-    | Complement (Apply (a, t)) -> simp (Apply (a, Complement t))
-    (* Arrows *)
-    | Apply (a, Apply (a', t)) -> simp (Apply (M.Arrow.compose a a', t))
-    | Apply (a, Combine (dir, t, t')) ->
-        `Combine (dir, Apply (a, t), Apply (a, t'))
-    | Apply (a, Var x) -> `Apply (a, `Var x)
-    | Apply (a, Typ t) -> simp (Typ (M.Arrow.apply a t))
-    | Apply (a, Complement t) -> (
-        match simp t with
-        | `Complement (`Var x) -> `Apply (a, `VarComplement x)
-        | `Complement (`Typ t) -> simp (Complement (Typ (M.Arrow.apply a t)))
-        | t' -> simp (Apply (a, un t')))
-
-  let unv x : Alg.t =
-    match x with `Var x -> Var x | `VarComplement x -> Complement (Var x)
-
-  let rec atomize ~lower ~upper : bound list Or_error.t =
-    let join = M.join Alg.lattice in
-    let meet = M.meet Alg.lattice in
-    match (simp lower, simp upper) with
-    (* Atomic bounds *)
-    | `Var x1, `Var x2 -> Ok [ Lower (Var x1, x2); Upper (x1, Var x2) ]
-    | `Var x, t2 -> Ok [ Upper (x, un t2) ]
-    | t1, `Var x -> Ok [ Lower (un t1, x) ]
-    (* Decompose inequality on type constructors *)
-    | `Typ lower, `Typ upper ->
-        M.decompose Alg.sexp_of_t (lower, upper) |> atomize_decomposition
-    (* Joins and meets *)
-    | `Combine (Top, t1, t1'), t2 -> (t1 *<=* un t2) @@ (t1' *<=* un t2)
-    | t1, `Combine (Bot, t2, t2') -> (un t1 *<=* t2) @@ (un t1 *<=* t2')
-    (* Wrong! *)
-    | `Combine (Bot, t1, t1'), t2 -> t1 *<=* Combine (Top, Complement t1', un t2)
-    | t1, `Combine (Top, t2, t2') ->
-        Combine (Bot, un t1, Complement t2) *<=* t2'
-    (* Complements *)
-    | `Complement t1, `Complement t2 -> un t2 *<=* un t1
-    | `Complement (`Typ t1), `Typ t2 ->
-        M.is_top Alg.sexp_of_t (join t1 t2) |> atomize_decomposition
-    | `Typ t1, `Complement (`Typ t2) ->
-        M.is_bot Alg.sexp_of_t (meet t1 t2) |> atomize_decomposition
-    | t1, `Complement (`Var x) -> Var x *<=* Complement (un t1)
-    | `Complement (`Var x), t2 -> Complement (un t2) *<=* Var x
-    (* Arrows *)
-    (* This case would trigger nondeterministically for both of the latter reductions,
-       so we produce both the adjoint-equivalent bounds *)
-    | `Apply (a1, t1), `Apply (a2, t2) ->
-        Apply (M.Arrow.compose (M.Arrow.left_adjoint a2) a1, unv t1)
-        *<=* unv t2
-        @@ unv t1
-           *<=* Apply (M.Arrow.compose (M.Arrow.right_adjoint a1) a2, unv t2)
-    | t1, `Apply (a, x) -> Apply (M.Arrow.left_adjoint a, un t1) *<=* unv x
-    | `Apply (a, x), t2 -> unv x *<=* Apply (M.Arrow.right_adjoint a, un t2)
-
-  and atomize_decomposition =
+  let rec atomize_decomposition =
     Or_error.bind ~f:(concat_map_or_error ~f:(fun (l, u) -> l *<=* u))
 
   and ( @@ ) a b = concat_map_or_error ~f:Fn.id [ a; b ]
-  and ( *<=* ) lower upper = atomize ~lower ~upper
+
+  and ( *<=* ) (lower : DNF.t) (upper : CNF.t) =
+    List.cartesian_product lower upper
+    |> concat_map_or_error ~f:(fun (l, u) -> l **<=** u)
+
+  and ( **<=** ) (lower : DNF.clause) (upper : CNF.clause) =
+    let DNF.{ vars; pos_typ; neg_typ } =
+      DNF.combine_clause lower (negate_cnf_clause_into_dnf upper)
+    in
+    (* vars /\ pos_typ /\ ~neg_typ <= bot *)
+    match Set.is_empty vars with
+    | true ->
+        M.decompose DNF.sexp_of_t (pos_typ, neg_typ)
+        |> Or_error.map
+             ~f:(List.map ~f:(fun (lower, upper) -> (lower, dnf_to_cnf upper)))
+        |> atomize_decomposition
+    | false ->
+        Set.to_list vars
+        |> concat_map_or_error ~f:(fun x ->
+               Ok
+                 [
+                   DNF.{ vars = Set.remove vars x; pos_typ; neg_typ }
+                   **<= DNF.Var.negate x;
+                 ])
+
+  and ( **<= ) (bound : DNF.clause) (var : DNF.Var.t) =
+    match var with
+    | { var; neg = true; app } ->
+        { var; neg = false; app } <=** negate_dnf_clause_into_cnf bound
+    | { var; neg = false; app } ->
+        Lower (DNF.apply_clause (M.Arrow.left_adjoint app) bound, var)
+
+  and ( <=** ) (var : DNF.Var.t) (bound : CNF.clause) =
+    match var with
+    | { var; neg = true; app } ->
+        negate_cnf_clause_into_dnf bound **<= { var; neg = false; app }
+    | { var; neg = false; app } ->
+        Upper (var, CNF.apply_clause (M.Arrow.right_adjoint app) bound)
 
   let rec atomize_constraint : Alg.t Constraint.t -> bound list Or_error.t =
     function
     | With (_, c) -> atomize_constraint c
-    | Flow { sub; sup } -> atomize ~lower:sub ~upper:sup
+    | Flow { sub; sup } -> dnf sub *<=* cnf sup
     | All cs -> concat_map_or_error cs ~f:atomize_constraint
 
   let collect_bounds atomic_bounds =
-    let open Alg in
     List.fold atomic_bounds ~init:Type_var.Map.empty ~f:(fun acc -> function
       | Lower (l, u) ->
           Map.update acc u ~f:(fun v ->
-              let low, high = Option.value v ~default:(Typ M.bot, Typ M.top) in
-              (Combine (Top, l, low), high))
+              let low, high = Option.value v ~default:(DNF.bot, CNF.top) in
+              (DNF.join [ l ] low, high))
       | Upper (l, u) ->
           Map.update acc l ~f:(fun v ->
-              let low, high = Option.value v ~default:(Typ M.bot, Typ M.top) in
-              (low, Combine (Bot, high, u))))
-    |> Map.map ~f:(fun (low, high) -> (dnf low, dnf high |> dnf_to_cnf))
+              let low, high = Option.value v ~default:(DNF.bot, CNF.top) in
+              (low, CNF.meet high [ u ])))
 
   let init c = atomize_constraint c |> Or_error.map ~f:collect_bounds
 
-  let iter normal_bounds =
-    let open Alg in
-    Map.to_alist normal_bounds
-    |> concat_map_or_error ~f:(fun (x, (lower, upper)) ->
-           let algebraise = Obj.magic in
-           let lower, upper = (algebraise lower, algebraise upper) in
-           (lower *<=* Var x) @@ (Var x *<=* upper) @@ (lower *<=* upper))
-    |> Or_error.map ~f:collect_bounds
+  let rec iterate bs =
+    let iteration bs =
+      Map.to_alist bs
+      |> concat_map_or_error ~f:(fun (x, (lower, upper)) ->
+             (lower *<=* CNF.var x)
+             @@ (DNF.var x *<=* upper)
+             @@ (lower *<=* upper))
+      |> Or_error.map ~f:collect_bounds
+    in
+    let bs' = iteration bs in
+    Or_error.bind bs' ~f:(fun bs' ->
+        if [%equal: (DNF.t * CNF.t) Type_var.Map.t] bs bs' then Ok bs
+        else iterate bs')
+
+  let run c = Or_error.bind (init c) ~f:iterate
 end
 
 module FabricTyper = struct
@@ -924,8 +1043,7 @@ let%expect_test "" =
     let c = Constraint.simp c in
     print_s [%message (t : Type.Alg.t)];
     print_s [%message (c : Type.Alg.t Constraint.t)];
-    let bounds = Solver.init c in
-    (* let bounds' = bounds |> Or_error.bind ~f:Solver.iter in *)
+    let bounds = Solver.run c in
     let prettify =
       Or_error.map
         ~f:
@@ -934,9 +1052,6 @@ let%expect_test "" =
     in
     print_s
       [%message (prettify bounds : (Sexp.t * Sexp.t) Type_var.Map.t Or_error.t)]
-    (* print_s
-      [%message
-        (prettify bounds' : (Sexp.t * Sexp.t) Type_var.Map.t Or_error.t)]; *)
   in
   test (Proj (Cons [ ("foo", Lit 5); ("bar", Tuple [ Lit 1; Lit 2 ]) ], "foo"));
   [%expect
@@ -991,9 +1106,7 @@ let%expect_test "" =
           (Flow (sub (Var $7))
            (sup (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top))))))))))))
     ("prettify bounds"
-     (Ok
-      (($4 (bot ({ (foo $7) | ? }))) ($5 (bot top))
-       ($7 (bot ({ (bar $6) | ? }))))))
+     (Ok (($4 (bot ({ (foo $7) | ? }))) ($7 (bot ({ (bar $6) | ? }))))))
     |}];
   test (Extend ("foo", Lit 0, Cons [ ("foo", Lit 1) ]));
   [%expect
@@ -1013,7 +1126,9 @@ let%expect_test "" =
          (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
     ("prettify bounds"
      (Error
-      ("Incompatible record fields" (lower (Present (Typ Int))) (upper Absent))))
+      ("Incompatible record fields"
+       (lower (Present (((vars ()) (pos_typ Int) (neg_typ Bot)))))
+       (upper Absent))))
     |}];
   test (Extend ("foo", Lit 0, Cons [ ("bar", Lit 1) ]));
   [%expect
@@ -1049,10 +1164,10 @@ let%expect_test "" =
            (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))))
     ("prettify bounds"
      (Ok
-      (($10 (bot ({ (foo _) | ? })))
-       ($11 (bot (& ({ (foo int) | ? }) (((records ((foo Top)))) $10)))))))
+      (($10 (((lift (foo)) $11) ({ (foo _) | ? })))
+       ($11 (bot (& ({ (foo int) | ? }) ((drop (foo)) $10)))))))
     |}];
-  test ("r => {b: r.b.not() | r}" |> Syntax.parse_exn);
+  test ("r => {b: r.b.not() | r \\ b}" |> Syntax.parse_exn);
   [%expect
     {|
     (t (Typ (Function (Var $12) (Var $13))))
@@ -1075,14 +1190,20 @@ let%expect_test "" =
                    (Typ (Record ((m ((not (Present (Var $16))))) (rest Top)))))))))
               (Flow (sub (Var $16)) (sup (Typ (Function (Var $14) (Var $15)))))
               (Flow (sub (Typ (Tuple ()))) (sup (Var $14)))))))
-          (Flow (sub (Var $12))
+          (With $18
+           (All
+            ((Flow (sub (Var $18)) (sup (Apply ((records ((b Top)))) (Var $12))))
+             (Flow (sub (Var $18))
+              (sup (Typ (Record ((m ((b Absent))) (rest Top)))))))))
+          (Flow (sub (Var $18))
            (sup (Typ (Record ((m ((b Absent))) (rest Top))))))
-          (Flow (sub (Var $13)) (sup (Apply ((records ((b Top)))) (Var $12))))
+          (Flow (sub (Var $13)) (sup (Apply ((records ((b Top)))) (Var $18))))
           (Flow (sub (Var $13))
            (sup (Typ (Record ((m ((b (Present (Var $15))))) (rest Top))))))))))))
     ("prettify bounds"
      (Ok
-      (($12 (bot ({ (b !) | ? })))
-       ($13 (bot (& ({ (b $15) | ? }) (((records ((b Top)))) $12))))
-       ($14 (() top)) ($16 (bot ($14 -> $15))) ($17 (bot ({ (not $16) | ? }))))))
+      (($12 ((| ((lift (b)) $13) ((lift (b)) $18)) ({ (b $17) | ? })))
+       ($13 (bot (& ({ (b $15) | ? }) ((drop (b)) $12) ((drop (b)) $18))))
+       ($14 (() top)) ($16 (bot ($14 -> $15))) ($17 (bot ({ (not $16) | ? })))
+       ($18 (((lift (b)) $13) (& ({ (b _) | ? }) ((drop (b)) $12)))))))
     |}]
