@@ -669,4 +669,56 @@ let%expect_test "" =
        ($27 ((| ($21 -> $23) $20 $21 $27 $29) (& ($27 -> $28) $21 $27)))
        ($28 ($23 ($25 -> $26)))
        ($29 ((| ($21 -> $23) $20) (& ($27 -> $28) $21 $27))) ($30 ($23 top)))))
+    |}];
+  test ("{} + {}" |> Syntax.parse_exn);
+  [%expect
+    {|
+    (t (Typ Int))
+    (c
+     (All
+      ((Flow (sub (Typ (Record ((m ()) (rest Absent))))) (sup (Typ Int)))
+       (Flow (sub (Typ (Record ((m ()) (rest Absent))))) (sup (Typ Int))))))
+    ("prettify bounds"
+     (Error
+      (("Incompatible types" (lower (Record ((m ()) (rest Absent)))) (upper Int))
+       ("Incompatible types" (lower (Record ((m ()) (rest Absent)))) (upper Int)))))
+    |}];
+  test ("(1 + 2).foo" |> Syntax.parse_exn);
+  [%expect
+    {|
+    (t (Var $31))
+    (c
+     (With $31
+      (All
+       ((Flow (sub (Typ Int)) (sup (Typ Int)))
+        (Flow (sub (Typ Int)) (sup (Typ Int)))
+        (Flow (sub (Typ Int))
+         (sup (Typ (Record ((m ((foo (Present (Var $31))))) (rest Top))))))))))
+    ("prettify bounds"
+     (Error
+      ("Incompatible types" (lower Int)
+       (upper
+        (Record
+         ((m
+           ((foo
+             (Present
+              (((vars (((var $31) (neg false) (app ((records ()))))))
+                (pos_typ Top) (neg_typ Bot)))))))
+          (rest Top)))))))
+    |}];
+  test ("({foo : 42}).bar" |> Syntax.parse_exn);
+  [%expect
+    {|
+    (t (Var $32))
+    (c
+     (With $32
+      (Flow (sub (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent)))))
+       (sup (Typ (Record ((m ((bar (Present (Var $32))))) (rest Top))))))))
+    ("prettify bounds"
+     (Error
+      ("Incompatible record fields" (lower Absent)
+       (upper
+        (Present
+         (((vars (((var $32) (neg false) (app ((records ())))))) (pos_typ Top)
+           (neg_typ Bot))))))))
     |}]
