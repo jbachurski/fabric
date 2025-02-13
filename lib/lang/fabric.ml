@@ -86,7 +86,7 @@ module Type = struct
       @
       match rest with
       | `Bot -> [ Atom "|"; Atom "!" ]
-      | `Top -> [ Atom "!"; Atom "?" ]
+      | `Top -> [ Atom "|"; Atom "?" ]
       | `Absent -> []
 
     let closed m = { m; rest = `Absent }

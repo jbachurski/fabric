@@ -194,160 +194,263 @@ module FabricTypeSystem :
   end
 end
 
+module type TypeSystem1 = sig
+  type 'a typ [@@deriving sexp, equal, compare]
+  type simple
+  type arrow
+
+  val pretty : ('a -> Sexp.t) -> 'a typ -> Sexp.t
+  val map : f:('a -> 'b) -> 'a typ -> 'b typ
+  val unwrap : simple -> simple typ
+  val is_top : ('a, 'a typ) massage
+  val is_bot : ('a, 'a typ) massage
+  val top : 'a typ
+  val bot : 'a typ
+  val join : 'a lattice -> 'a typ -> 'a typ -> 'a typ
+  val meet : 'a lattice -> 'a typ -> 'a typ -> 'a typ
+  val join_token : string
+  val meet_token : string
+
+  module Arrow : sig
+    type t = arrow [@@deriving sexp, equal, compare]
+
+    val id : t
+    val is_id : t -> bool
+    val compose : t -> t -> t
+    val apply : t -> 'a typ -> 'a typ
+  end
+end
+
+module type NF = sig
+  type 't typ
+  type arrow
+
+  module Var : sig
+    module T : sig
+      type t = { var : Type_var.t; neg : bool; app : arrow }
+      [@@deriving sexp, equal, compare]
+    end
+
+    type t = T.t = { var : Type_var.t; neg : bool; app : arrow }
+    [@@deriving sexp, equal, compare]
+
+    module Set : Set.S with type Elt.t = t
+  end
+
+  type clause = { vars : Var.Set.t; pos_typ : t typ; neg_typ : t typ }
+  [@@deriving sexp, equal, compare]
+
+  and t = clause list [@@deriving sexp, equal, compare]
+
+  val pretty : t -> Sexp.t
+  val typ : t typ -> t
+  val var : Type_var.t -> t
+  val top : t
+  val bot : t
+  val join : t -> t -> t
+  val meet : t -> t -> t
+  val negate : t -> t
+  val apply : arrow -> t -> t
+  val lattice : t lattice
+end
+
+module DNF (M : TypeSystem1) :
+  NF with type 't typ := 't M.typ and type arrow := M.Arrow.t = struct
+  module Var = struct
+    module T = struct
+      type t = { var : Type_var.t; neg : bool; app : M.Arrow.t }
+      [@@deriving sexp, equal, compare]
+    end
+
+    include T
+
+    let pretty { var; neg; app } =
+      let open Sexp in
+      let x = Atom (Type_var.to_string var) in
+      match (neg, M.Arrow.is_id app) with
+      | false, true -> x
+      | true, true -> List [ Atom "~"; x ]
+      | false, false -> List [ M.Arrow.sexp_of_t app; x ]
+      | true, false -> List [ Atom "~"; M.Arrow.sexp_of_t app; x ]
+
+    let var x = { var = x; neg = false; app = M.Arrow.id }
+    let negate t = { t with neg = not t.neg }
+    let apply a t = { t with app = M.Arrow.compose a t.app }
+
+    module Set = Set.Make (T)
+  end
+
+  type clause = { vars : Var.Set.t; pos_typ : t M.typ; neg_typ : t M.typ }
+  [@@deriving sexp, equal, compare]
+
+  and t = clause list [@@deriving sexp, equal, compare]
+
+  let must_be_top ty =
+    match M.is_top (Fn.const (Sexp.Atom "")) ty with
+    | Ok [] -> true
+    | _ -> false
+
+  let must_be_bot ty =
+    match M.is_bot (Fn.const (Sexp.Atom "")) ty with
+    | Ok [] -> true
+    | _ -> false
+
+  let must_be_sub ty ty' =
+    must_be_bot ty || must_be_top ty' || [%equal: t M.typ] ty ty'
+
+  let rec pretty_clause { vars; pos_typ; neg_typ } =
+    let open Sexp in
+    let os =
+      List.map ~f:Var.pretty (Core.Set.to_list vars)
+      @ (if must_be_top pos_typ then [] else [ M.pretty pretty pos_typ ])
+      @
+      if must_be_bot neg_typ then []
+      else [ List [ Atom "~"; M.pretty pretty neg_typ ] ]
+    in
+    match os with
+    | [] -> M.pretty pretty M.top
+    | [ c ] -> c
+    | os -> List (Atom M.meet_token :: os)
+
+  and pretty =
+    let open Sexp in
+    function
+    | [] -> M.pretty pretty M.bot
+    | [ c ] -> pretty_clause c
+    | t -> List ([ Atom M.join_token ] @ List.map ~f:pretty_clause t)
+
+  let rec _simple t : t =
+    [
+      {
+        vars = Var.Set.empty;
+        pos_typ = M.map ~f:(fun t -> _simple t) (M.unwrap t);
+        neg_typ = M.bot;
+      };
+    ]
+
+  let _bot_clause = { vars = Var.Set.empty; pos_typ = M.bot; neg_typ = M.top }
+  let top_clause = { vars = Var.Set.empty; pos_typ = M.top; neg_typ = M.bot }
+  let bot : t = []
+  let top : t = [ top_clause ]
+  let typ typ : t = [ { top_clause with pos_typ = typ } ]
+  let var x = [ { top_clause with vars = Var.Set.singleton (Var.var x) } ]
+
+  let simplify cs =
+    (* Deduplicate *)
+    List.dedup_and_sort cs ~compare:compare_clause
+    (* Eliminate clauses which are trivially bottom *)
+    |> List.filter ~f:(fun { vars = _; pos_typ; neg_typ } ->
+           not (must_be_bot pos_typ || must_be_top neg_typ))
+    (* Eliminate subsumed clauses *)
+    |> List.filter ~f:(fun c ->
+           List.exists cs ~f:(fun c' ->
+               (not (equal_clause c c'))
+               && Set.is_subset c'.vars ~of_:c.vars
+               && must_be_sub c.pos_typ c'.pos_typ
+               && must_be_sub c'.neg_typ c.neg_typ)
+           |> not)
+
+  let apply a t =
+    List.map t ~f:(fun { vars; pos_typ; neg_typ } ->
+        {
+          vars = Var.Set.map vars ~f:(fun x -> Var.apply a x);
+          pos_typ = M.Arrow.apply a pos_typ;
+          neg_typ = M.Arrow.apply a neg_typ;
+        })
+
+  let join t t' = t @ t' |> simplify
+
+  let rec meet_clause t t' =
+    {
+      vars = Set.union t.vars t'.vars;
+      pos_typ = M.meet lattice t.pos_typ t'.pos_typ;
+      neg_typ = M.join lattice t.neg_typ t'.neg_typ;
+    }
+
+  and meet t t' =
+    List.cartesian_product t t'
+    |> List.map ~f:(fun (c, c') -> meet_clause c c')
+    |> simplify
+
+  and lattice = { join; meet }
+
+  let negate_clause t =
+    List.map (Set.to_list t.vars) ~f:(fun x ->
+        { top_clause with vars = Var.Set.singleton (Var.negate x) })
+    @ [
+        { top_clause with pos_typ = t.neg_typ };
+        { top_clause with neg_typ = t.pos_typ };
+      ]
+
+  let negate t = List.map t ~f:negate_clause |> List.fold ~init:top ~f:meet
+end
+
+let%expect_test "normal forms" =
+  let open DNF (struct
+    include FabricTypeSystem
+
+    let join_token = "|"
+    and meet_token = "&"
+  end) in
+  let var x = var (Type_var.of_string x) in
+  let ( + ) = join and ( * ) = meet and ( ! ) = negate in
+  let sexp_of_t = pretty in
+  let a = var "a" and b = var "b" and c = var "c" in
+  print_s [%message (a : t)];
+  [%expect {| (a a) |}];
+  print_s [%message (a |> negate : t)];
+  [%expect {| ("a |> negate" (~ a)) |}];
+  print_s [%message (!(a + b) : t)];
+  [%expect {| ("!(a + b)" (& (~ a) (~ b))) |}];
+  print_s [%message (!(a + top) : t)];
+  [%expect {| ("!(a + top)" bot) |}];
+  print_s [%message ((a + b) * (b + c) * (c + a) : t)];
+  print_s [%message ((a * b) + (b * c) + (c * a) : t)];
+  [%expect
+    {|
+  ("((a + b) * (b + c)) * (c + a)" (| (& a b) (& a c) (& b c)))
+  ("((a * b) + (b * c)) + (c * a)" (| (& a b) (& a c) (& b c)))
+  |}]
+
+module CNF (M : TypeSystem1) :
+  NF with type 't typ := 't M.typ and type arrow := M.Arrow.t = struct
+  module M' = struct
+    type 't typ = 't M.typ [@@deriving sexp, equal, compare]
+    type simple = M.simple
+    type arrow = M.arrow
+
+    let pretty = M.pretty
+    let map = M.map
+    let unwrap = M.unwrap
+
+    module Arrow = M.Arrow
+
+    let is_top = M.is_bot
+    and is_bot = M.is_top
+
+    let top = M.bot
+    and bot = M.top
+
+    let join = M.meet
+    and meet = M.join
+
+    let join_token = M.meet_token
+    and meet_token = M.join_token
+  end
+
+  include DNF (M')
+end
+
 module Type (M : TypeSystem) = struct
   open M
   open Lang.Sym
 
-  module Normal = struct
-    module Var = struct
-      module T = struct
-        type t = { var : Type_var.t; neg : bool; app : Arrow.t }
-        [@@deriving sexp, equal, compare]
-      end
+  module Normal = DNF (struct
+    include M
 
-      include T
-
-      let pretty { var; neg; app } =
-        let open Sexp in
-        let x = Atom (Type_var.to_string var) in
-        match (neg, Arrow.is_id app) with
-        | false, true -> x
-        | true, true -> List [ Atom "~"; x ]
-        | false, false -> List [ Arrow.sexp_of_t app; x ]
-        | true, false -> List [ Atom "~"; Arrow.sexp_of_t app; x ]
-
-      let var x = { var = x; neg = false; app = Arrow.id }
-      let negate t = { t with neg = not t.neg }
-      let apply a t = { t with app = Arrow.compose a t.app }
-
-      module Set = Set.Make (T)
-    end
-
-    type clause = { vars : Var.Set.t; pos_typ : t M.typ; neg_typ : t M.typ }
-    [@@deriving sexp, equal, compare]
-
-    and t = clause list [@@deriving sexp, equal, compare]
-
-    let must_be_top ty =
-      match M.is_top (Fn.const (Sexp.Atom "")) ty with
-      | Ok [] -> true
-      | _ -> false
-
-    let must_be_bot ty =
-      match M.is_bot (Fn.const (Sexp.Atom "")) ty with
-      | Ok [] -> true
-      | _ -> false
-
-    let must_be_sub ty ty' =
-      must_be_bot ty || must_be_top ty' || [%equal: t M.typ] ty ty'
-
-    let rec pretty_clause { vars; pos_typ; neg_typ } =
-      let open Sexp in
-      let os =
-        List.map ~f:Var.pretty (Core.Set.to_list vars)
-        @ (if must_be_top pos_typ then [] else [ M.pretty pretty pos_typ ])
-        @
-        if must_be_bot neg_typ then []
-        else [ List [ Atom "~"; M.pretty pretty neg_typ ] ]
-      in
-      match os with
-      | [] -> M.pretty pretty M.top
-      | [ c ] -> c
-      | os -> List (Atom "&" :: os)
-
-    and pretty =
-      let open Sexp in
-      function
-      | [] -> M.pretty pretty M.bot
-      | [ c ] -> pretty_clause c
-      | t -> List ([ Atom "|" ] @ List.map ~f:pretty_clause t)
-
-    let rec simple t : t =
-      [
-        {
-          vars = Var.Set.empty;
-          pos_typ = M.map ~f:(fun t -> simple t) (M.unwrap t);
-          neg_typ = M.bot;
-        };
-      ]
-
-    let bot_clause = { vars = Var.Set.empty; pos_typ = M.bot; neg_typ = M.top }
-    let top_clause = { vars = Var.Set.empty; pos_typ = M.top; neg_typ = M.bot }
-    let bot : t = []
-    let top : t = [ top_clause ]
-    let typ typ : t = [ { top_clause with pos_typ = typ } ]
-    let var x = [ { top_clause with vars = Var.Set.singleton (Var.var x) } ]
-
-    let simplify cs =
-      (* Deduplicate *)
-      List.dedup_and_sort cs ~compare:compare_clause
-      (* Eliminate clauses which are trivially bottom *)
-      |> List.filter ~f:(fun { vars = _; pos_typ; neg_typ } ->
-             not (must_be_bot pos_typ || must_be_top neg_typ))
-      (* Eliminate subsumed clauses *)
-      |> List.filter ~f:(fun c ->
-             List.exists cs ~f:(fun c' ->
-                 (not (equal_clause c c'))
-                 && Set.is_subset c'.vars ~of_:c.vars
-                 && must_be_sub c.pos_typ c'.pos_typ
-                 && must_be_sub c'.neg_typ c.neg_typ)
-             |> not)
-
-    let apply a t =
-      List.map t ~f:(fun { vars; pos_typ; neg_typ } ->
-          {
-            vars = Var.Set.map vars ~f:(fun x -> Var.apply a x);
-            pos_typ = M.Arrow.apply a pos_typ;
-            neg_typ = M.Arrow.apply a neg_typ;
-          })
-
-    let join t t' = t @ t' |> simplify
-
-    let rec meet_clause t t' =
-      {
-        vars = Set.union t.vars t'.vars;
-        pos_typ = M.meet lattice t.pos_typ t'.pos_typ;
-        neg_typ = M.join lattice t.neg_typ t'.neg_typ;
-      }
-
-    and meet t t' =
-      List.cartesian_product t t'
-      |> List.map ~f:(fun (c, c') -> meet_clause c c')
-      |> simplify
-
-    and lattice = { join; meet }
-
-    let negate_clause t =
-      List.map (Set.to_list t.vars) ~f:(fun x ->
-          { top_clause with vars = Var.Set.singleton (Var.negate x) })
-      @ [
-          { top_clause with pos_typ = t.neg_typ };
-          { top_clause with neg_typ = t.pos_typ };
-        ]
-
-    let negate t = List.map t ~f:negate_clause |> List.fold ~init:top ~f:meet
-
-    let%expect_test "normal forms" =
-      let var x = var (Type_var.of_string x) in
-      let ( + ) = join and ( * ) = meet and ( ! ) = negate in
-      let sexp_of_t = pretty in
-      let a = var "a" and b = var "b" and c = var "c" in
-      print_s [%message (a : t)];
-      [%expect {| (a a) |}];
-      print_s [%message (a |> negate : t)];
-      [%expect {| ("a |> negate" (~ a)) |}];
-      print_s [%message (!(a + b) : t)];
-      [%expect {| ("!(a + b)" (& (~ a) (~ b))) |}];
-      print_s [%message (!(a + top) : t)];
-      [%expect {| ("!(a + top)" bot) |}];
-      print_s [%message ((a + b) * (b + c) * (c + a) : t)];
-      print_s [%message ((a * b) + (b * c) + (c * a) : t)];
-      [%expect
-        {|
-        ("((a + b) * (b + c)) * (c + a)" (| (& a b) (& a c) (& b c)))
-        ("((a * b) + (b * c)) + (c * a)" (| (& a b) (& a c) (& b c)))
-        |}]
-  end
+    let join_token = "|"
+    and meet_token = "&"
+  end)
 
   module Alg = struct
     type dir = Bot | Top [@@deriving sexp, equal, compare]
@@ -369,15 +472,33 @@ module Type (M : TypeSystem) = struct
   let typ t = Alg.Typ t
   let apply a t = Alg.Apply (a, t)
 
-  let rec normalize : Alg.t -> Normal.t =
+  let rec normalise : Alg.t -> Normal.t =
     let open Normal in
     function
     | Var x -> var x
-    | Typ t -> typ (map ~f:normalize t)
-    | Apply (a, t) -> apply a (normalize t)
-    | Combine (Top, t, t') -> join (normalize t) (normalize t')
-    | Combine (Bot, t, t') -> meet (normalize t) (normalize t')
-    | Complement t -> negate (normalize t)
+    | Typ t -> typ (map ~f:normalise t)
+    | Apply (a, t) -> apply a (normalise t)
+    | Combine (Top, t, t') -> join (normalise t) (normalise t')
+    | Combine (Bot, t, t') -> meet (normalise t) (normalise t')
+    | Complement t -> negate (normalise t)
+
+  let rec algebraise_clause : Normal.clause -> Alg.t =
+   fun { vars; pos_typ; neg_typ } ->
+    Combine
+      ( Bot,
+        Set.fold vars ~init:(Alg.Typ M.top)
+          ~f:(fun acc Normal.Var.{ var; neg; app } ->
+            let r = Alg.Apply (app, Var var) in
+            let r = match neg with false -> r | true -> Complement r in
+            Combine (Bot, acc, r)),
+        Combine
+          ( Bot,
+            Typ (M.map ~f:algebraise pos_typ),
+            Complement (Typ (M.map ~f:algebraise neg_typ)) ) )
+
+  and algebraise : Normal.t -> Alg.t =
+    List.fold ~init:(Alg.Typ M.bot) ~f:(fun acc clause ->
+        Combine (Top, acc, algebraise_clause clause))
 end
 
 module Constraint = struct
@@ -450,11 +571,6 @@ module Solver (M : TypeSystem) = struct
   type bound = Lower of Alg.t * Type_var.t | Upper of Type_var.t * Alg.t
   [@@deriving sexp]
 
-  type normal_bound =
-    | NLower of Normal.t * Type_var.t
-    | NUpper of Type_var.t * Normal.t
-  [@@deriving sexp]
-
   type dir = Alg.dir = Bot | Top
 
   let concat_map_or_error xs ~f =
@@ -516,9 +632,10 @@ module Solver (M : TypeSystem) = struct
     (* Joins and meets *)
     | `Combine (Top, t1, t1'), t2 -> (t1 *<=* un t2) @@ (t1' *<=* un t2)
     | t1, `Combine (Bot, t2, t2') -> (un t1 *<=* t2) @@ (un t1 *<=* t2')
-    | `Combine (Bot, t1, t1'), t2 -> t1 *<=* Combine (Bot, Complement t1', un t2)
+    (* Wrong! *)
+    | `Combine (Bot, t1, t1'), t2 -> t1 *<=* Combine (Top, Complement t1', un t2)
     | t1, `Combine (Top, t2, t2') ->
-        Combine (Top, un t1, Complement t2) *<=* t2'
+        Combine (Bot, un t1, Complement t2) *<=* t2'
     (* Complements *)
     | `Complement t1, `Complement t2 -> un t2 *<=* un t1
     | `Complement (`Typ t1), `Typ t2 ->
@@ -550,10 +667,28 @@ module Solver (M : TypeSystem) = struct
     | Flow { sub; sup } -> atomize ~lower:sub ~upper:sup
     | All cs -> concat_map_or_error cs ~f:atomize_constraint
 
-  let normalize_bounds =
-    List.map ~f:(function
-      | Lower (l, u) -> NLower (normalize l, u)
-      | Upper (l, u) -> NUpper (l, normalize u))
+  let collect_bounds atomic_bounds =
+    let open Alg in
+    List.fold atomic_bounds ~init:Type_var.Map.empty ~f:(fun acc -> function
+      | Lower (l, u) ->
+          Map.update acc u ~f:(fun v ->
+              let low, high = Option.value v ~default:(Typ M.bot, Typ M.top) in
+              (Combine (Top, l, low), high))
+      | Upper (l, u) ->
+          Map.update acc l ~f:(fun v ->
+              let low, high = Option.value v ~default:(Typ M.bot, Typ M.top) in
+              (low, Combine (Bot, high, u))))
+    |> Map.map ~f:(fun (low, high) -> (normalise low, normalise high))
+
+  let init c = atomize_constraint c |> Or_error.map ~f:collect_bounds
+
+  let iter normal_bounds =
+    let open Alg in
+    Map.to_alist normal_bounds
+    |> concat_map_or_error ~f:(fun (x, (lower, upper)) ->
+           let lower, upper = (algebraise lower, algebraise upper) in
+           (lower *<=* Var x) @@ (Var x *<=* upper) @@ (lower *<=* upper))
+    |> Or_error.map ~f:collect_bounds
 end
 
 module FabricTyper = struct
@@ -574,6 +709,26 @@ module FabricTyper = struct
         let t, c = Constrained.unwrap t in
         Constrained.wrap (Field.Present t, c)
 
+  let rec alg_of_typ (Lang.Fabric.Type.T t) =
+    typ (Lang.Fabric.Type.map ~f:alg_of_typ t)
+
+  let rec pat : pattern -> ((Var.t * Alg.t) list * Alg.t) Constrained.t =
+    let open Constrained in
+    function
+    | Atom (x, t) ->
+        let$ x_ = () in
+        let* () = x_ <: alg_of_typ t in
+        return ([ (Var.of_string x, x_) ], x_)
+    | List ps ->
+        let* rs = all (List.map ~f:pat ps) in
+        let xs = List.concat_map ~f:fst rs in
+        let ps = List.map ~f:snd rs in
+        return (xs, typ (Tuple ps))
+
+  let push xs (env : _ Var.Map.t) =
+    List.fold xs ~init:env ~f:(fun env (x, x_) ->
+        Map.add_exn ~key:x ~data:x_ env)
+
   let rec go (env : Alg.t Var.Map.t) : t -> Alg.t Constrained.t =
     let open Constrained in
     let return_typ (t : Alg.t Lang.Fabric.Type.typ) = return (typ t) in
@@ -583,15 +738,15 @@ module FabricTyper = struct
     function
     | Var (x, _) -> return (Map.find_exn env (Var.of_string x))
     | Lit _ -> return_typ Int
-    | Let (Atom (x, _), e, e') ->
-        let$ x_ = () in
+    | Let (p, e, e') ->
+        let* xs, t = pat p in
         let* e = go env e in
-        let* () = e <: x_ in
-        go (Map.add_exn env ~key:(Var.of_string x) ~data:x_) e'
-    | Fun (Atom (x, _), e) ->
-        let$ x_ = () in
-        let* e = go (Map.add_exn env ~key:(Var.of_string x) ~data:x_) e in
-        return_typ (Function (x_, e))
+        let* () = e <: t in
+        go (push xs env) e'
+    | Fun (p, e) ->
+        let* xs, t = pat p in
+        let* e = go (push xs env) e in
+        return_typ (Function (t, e))
     | Tuple ts ->
         let* ts = all (List.map ~f:(go env) ts) in
         return_typ (Tuple ts)
@@ -649,21 +804,29 @@ module FabricTyper = struct
     | Shape _ -> failwith "TypeExpr.go: Shape"
     | Intrinsic _ -> failwith "TypeExpr.go: Intrinsic"
     | Closure _ -> failwith "TypeExpr.go: Closure"
-    | Let _ -> failwith "TypeExpr.go: non-Atom Let"
-    | Fun _ -> failwith "TypeExpr.go: non-Atom Fun"
     | Op (_, o, _) -> failwith ("TypeExpr.go: Op " ^ o)
 end
 
 let%expect_test "" =
   let test e =
-    let t, c =
-      FabricTyper.Constrained.unwrap (FabricTyper.go Var.Map.empty e)
-    in
+    let open FabricTyper in
+    let t, c = Constrained.unwrap (go Var.Map.empty e) in
     let c = Constraint.simp c in
-    print_s [%message (t : FabricTyper.Type.Alg.t)];
-    print_s [%message (c : FabricTyper.Type.Alg.t Constraint.t)];
-    let bounds = FabricTyper.Solver.(atomize_constraint c) in
-    print_s [%message (bounds : FabricTyper.Solver.bound list Or_error.t)]
+    print_s [%message (t : Type.Alg.t)];
+    print_s [%message (c : Type.Alg.t Constraint.t)];
+    let bounds = Solver.init c in
+    (* let bounds' = bounds |> Or_error.bind ~f:Solver.iter in *)
+    let prettify =
+      Or_error.map
+        ~f:
+          (Map.map ~f:(fun (lower, upper) ->
+               (Type.Normal.pretty lower, Type.Normal.pretty upper)))
+    in
+    print_s
+      [%message (prettify bounds : (Sexp.t * Sexp.t) Type_var.Map.t Or_error.t)]
+    (* print_s
+      [%message
+        (prettify bounds' : (Sexp.t * Sexp.t) Type_var.Map.t Or_error.t)]; *)
   in
   test (Proj (Cons [ ("foo", Lit 5); ("bar", Tuple [ Lit 1; Lit 2 ]) ], "foo"));
   [%expect
@@ -680,7 +843,7 @@ let%expect_test "" =
              (foo (Present (Typ Int)))))
            (rest Absent)))))
        (sup (Typ (Record ((m ((foo (Present (Var $1))))) (rest Top))))))))
-    (bounds (Ok ((Lower (Typ Int) $1))))
+    ("prettify bounds" (Ok (($1 (int top)))))
     |}];
   test
     (Fun
@@ -691,12 +854,12 @@ let%expect_test "" =
     {|
     (t (Typ (Function (Var $2) (Typ (Function (Var $3) (Typ Int))))))
     (c
-     (With $2
-      (With $3
-       (All
-        ((Flow (sub (Var $2)) (sup (Typ Int)))
-         (Flow (sub (Var $3)) (sup (Typ Int))))))))
-    (bounds (Ok ((Upper $2 (Typ Int)) (Upper $3 (Typ Int)))))
+     (All
+      ((With $2 (Flow (sub (Var $2)) (sup (Typ Top))))
+       (With $3 (Flow (sub (Var $3)) (sup (Typ Top))))
+       (Flow (sub (Var $2)) (sup (Typ Int)))
+       (Flow (sub (Var $3)) (sup (Typ Int))))))
+    ("prettify bounds" (Ok (($2 (bot int)) ($3 (bot int)))))
     |}];
   test
     (Fun
@@ -707,8 +870,9 @@ let%expect_test "" =
     {|
     (t (Typ (Function (Var $4) (Typ (Function (Var $5) (Var $6))))))
     (c
-     (With $4
-      (With $5
+     (All
+      ((With $4 (Flow (sub (Var $4)) (sup (Typ Top))))
+       (With $5 (Flow (sub (Var $5)) (sup (Typ Top))))
        (With $6
         (All
          ((With $7
@@ -716,10 +880,10 @@ let%expect_test "" =
             (sup (Typ (Record ((m ((foo (Present (Var $7))))) (rest Top)))))))
           (Flow (sub (Var $7))
            (sup (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top))))))))))))
-    (bounds
+    ("prettify bounds"
      (Ok
-      ((Upper $4 (Typ (Record ((m ((foo (Present (Var $7))))) (rest Top)))))
-       (Upper $7 (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top))))))))
+      (($4 (bot ({ (foo $7) | ? }))) ($5 (bot top))
+       ($7 (bot ({ (bar $6) | ? }))))))
     |}];
   test (Extend ("foo", Lit 0, Cons [ ("foo", Lit 1) ]));
   [%expect
@@ -737,7 +901,7 @@ let%expect_test "" =
            (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent)))))))
         (Flow (sub (Var $8))
          (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
-    (bounds
+    ("prettify bounds"
      (Error
       ("Incompatible record fields" (lower (Present (Typ Int))) (upper Absent))))
     |}];
@@ -757,63 +921,58 @@ let%expect_test "" =
            (Typ (Record ((m ((bar (Present (Typ Int))))) (rest Absent)))))))
         (Flow (sub (Var $9))
          (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
-    (bounds
-     (Ok
-      ((Upper $9
-        (Typ (Record ((m ((bar (Present (Typ Int))) (foo Top))) (rest Absent)))))
-       (Upper $9 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))
+    ("prettify bounds" (Ok (($9 (bot ({ (bar int) (foo int) }))))))
     |}];
   test (Fun (Atom ("x", T Top), Extend ("foo", Lit 0, Var ("x", T Top))));
   [%expect
     {|
     (t (Typ (Function (Var $10) (Var $11))))
     (c
-     (With $10
-      (With $11
-       (All
-        ((Flow (sub (Var $10))
-          (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
-         (Flow (sub (Var $11)) (sup (Apply ((records ((foo Top)))) (Var $10))))
-         (Flow (sub (Var $11))
-          (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top)))))))))))
-    (bounds
+     (All
+      ((With $10 (Flow (sub (Var $10)) (sup (Typ Top))))
+       (With $11
+        (All
+         ((Flow (sub (Var $10))
+           (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
+          (Flow (sub (Var $11)) (sup (Apply ((records ((foo Top)))) (Var $10))))
+          (Flow (sub (Var $11))
+           (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))))
+    ("prettify bounds"
      (Ok
-      ((Upper $10 (Typ (Record ((m ((foo Absent))) (rest Top)))))
-       (Upper $11 (Apply ((records ((foo Top)))) (Var $10)))
-       (Upper $11 (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))
+      (($10 (bot ({ (foo _) | ? })))
+       ($11 (bot (& (((records ((foo Top)))) $10) ({ (foo int) | ? })))))))
     |}];
   test ("r => {b: r.b.not() | r}" |> Syntax.parse_exn);
-  [%expect {|
+  [%expect
+    {|
     (t (Typ (Function (Var $12) (Var $13))))
     (c
-     (With $12
-      (With $13
-       (All
-        ((With $14
-          (With $15
-           (All
-            ((With $16
-              (All
-               ((With $17
-                 (Flow (sub (Var $12))
-                  (sup (Typ (Record ((m ((b (Present (Var $17))))) (rest Top)))))))
-                (Flow (sub (Var $17))
-                 (sup
-                  (Typ (Record ((m ((not (Present (Var $16))))) (rest Top)))))))))
-             (Flow (sub (Var $16)) (sup (Typ (Function (Var $14) (Var $15)))))
-             (Flow (sub (Typ (Tuple ()))) (sup (Var $14)))))))
-         (Flow (sub (Var $12))
-          (sup (Typ (Record ((m ((b Absent))) (rest Top))))))
-         (Flow (sub (Var $13)) (sup (Apply ((records ((b Top)))) (Var $12))))
-         (Flow (sub (Var $13))
-          (sup (Typ (Record ((m ((b (Present (Var $15))))) (rest Top)))))))))))
-    (bounds
+     (All
+      ((With $12 (Flow (sub (Var $12)) (sup (Typ Top))))
+       (With $13
+        (All
+         ((With $14
+           (With $15
+            (All
+             ((With $16
+               (All
+                ((With $17
+                  (Flow (sub (Var $12))
+                   (sup
+                    (Typ (Record ((m ((b (Present (Var $17))))) (rest Top)))))))
+                 (Flow (sub (Var $17))
+                  (sup
+                   (Typ (Record ((m ((not (Present (Var $16))))) (rest Top)))))))))
+              (Flow (sub (Var $16)) (sup (Typ (Function (Var $14) (Var $15)))))
+              (Flow (sub (Typ (Tuple ()))) (sup (Var $14)))))))
+          (Flow (sub (Var $12))
+           (sup (Typ (Record ((m ((b Absent))) (rest Top))))))
+          (Flow (sub (Var $13)) (sup (Apply ((records ((b Top)))) (Var $12))))
+          (Flow (sub (Var $13))
+           (sup (Typ (Record ((m ((b (Present (Var $15))))) (rest Top))))))))))))
+    ("prettify bounds"
      (Ok
-      ((Upper $12 (Typ (Record ((m ((b (Present (Var $17))))) (rest Top)))))
-       (Upper $17 (Typ (Record ((m ((not (Present (Var $16))))) (rest Top)))))
-       (Upper $16 (Typ (Function (Var $14) (Var $15))))
-       (Lower (Typ (Tuple ())) $14)
-       (Upper $12 (Typ (Record ((m ((b Absent))) (rest Top)))))
-       (Upper $13 (Apply ((records ((b Top)))) (Var $12)))
-       (Upper $13 (Typ (Record ((m ((b (Present (Var $15))))) (rest Top))))))))
+      (($12 (bot ({ (b !) | ? })))
+       ($13 (bot (& (((records ((b Top)))) $12) ({ (b $15) | ? }))))
+       ($14 (() top)) ($16 (bot ($14 -> $15))) ($17 (bot ({ (not $16) | ? }))))))
     |}]
