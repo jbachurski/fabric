@@ -358,8 +358,6 @@ module DNF (M : TypeSystem1) :
   let top_clause = { vars = Var.Set.empty; pos_typ = M.top; neg_typ = M.bot }
   let bot : t = []
   let top : t = [ top_clause ]
-  let typ typ : t = [ { top_clause with pos_typ = typ } ]
-  let var x = [ { top_clause with vars = Var.Set.singleton (Var.var x) } ]
 
   let simplify cs =
     (* Deduplicate *)
@@ -378,6 +376,9 @@ module DNF (M : TypeSystem1) :
     |> List.filter ~f:(fun c ->
            Set.exists c.vars ~f:(fun x -> Set.mem c.vars (Var.negate x)) |> not)
 
+  let typ typ : t = [ { top_clause with pos_typ = typ } ] |> simplify
+  let var x = [ { top_clause with vars = Var.Set.singleton (Var.var x) } ]
+
   let apply a t =
     List.map t ~f:(fun { vars; pos_typ; neg_typ } ->
         {
@@ -385,6 +386,7 @@ module DNF (M : TypeSystem1) :
           pos_typ = M.Arrow.apply a pos_typ;
           neg_typ = M.Arrow.apply a neg_typ;
         })
+    |> simplify
 
   let join t t' = t @ t' |> simplify
 
@@ -555,7 +557,14 @@ module Type (M : TypeSystem) = struct
   open M
   open Lang.Sym
 
-  module Normal = DNF (struct
+  module DNF = DNF (struct
+    include M
+
+    let join_token = "|"
+    and meet_token = "&"
+  end)
+
+  module CNF = CNF (struct
     include M
 
     let join_token = "|"
@@ -582,15 +591,23 @@ module Type (M : TypeSystem) = struct
   let typ t = Alg.Typ t
   let apply a t = Alg.Apply (a, t)
 
-  let rec normalise : Alg.t -> Normal.t =
-    let open Normal in
+  let rec dnf : Alg.t -> DNF.t =
+    let open DNF in
     function
     | Var x -> var x
-    | Typ t -> typ (map ~f:normalise t)
-    | Apply (a, t) -> apply a (normalise t)
-    | Combine (Top, t, t') -> join (normalise t) (normalise t')
-    | Combine (Bot, t, t') -> meet (normalise t) (normalise t')
-    | Complement t -> negate (normalise t)
+    | Typ t -> typ (map ~f:dnf t)
+    | Apply (a, t) -> apply a (dnf t)
+    | Combine (Top, t, t') -> join (dnf t) (dnf t')
+    | Combine (Bot, t, t') -> meet (dnf t) (dnf t')
+    | Complement t -> negate (dnf t)
+
+  let dnf_to_cnf =
+    let open CNF in
+    DNF.interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply
+
+  let cnf_to_dnf =
+    let open DNF in
+    CNF.interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply
 end
 
 module Constraint = struct
@@ -770,7 +787,7 @@ module Solver (M : TypeSystem) = struct
           Map.update acc l ~f:(fun v ->
               let low, high = Option.value v ~default:(Typ M.bot, Typ M.top) in
               (low, Combine (Bot, high, u))))
-    |> Map.map ~f:(fun (low, high) -> (normalise low, normalise high))
+    |> Map.map ~f:(fun (low, high) -> (dnf low, dnf high |> dnf_to_cnf))
 
   let init c = atomize_constraint c |> Or_error.map ~f:collect_bounds
 
@@ -913,7 +930,7 @@ let%expect_test "" =
       Or_error.map
         ~f:
           (Map.map ~f:(fun (lower, upper) ->
-               (Type.Normal.pretty lower, Type.Normal.pretty upper)))
+               (Type.DNF.pretty lower, Type.CNF.pretty upper)))
     in
     print_s
       [%message (prettify bounds : (Sexp.t * Sexp.t) Type_var.Map.t Or_error.t)]
@@ -1033,7 +1050,7 @@ let%expect_test "" =
     ("prettify bounds"
      (Ok
       (($10 (bot ({ (foo _) | ? })))
-       ($11 (bot (& (((records ((foo Top)))) $10) ({ (foo int) | ? })))))))
+       ($11 (bot (& ({ (foo int) | ? }) (((records ((foo Top)))) $10)))))))
     |}];
   test ("r => {b: r.b.not() | r}" |> Syntax.parse_exn);
   [%expect
@@ -1066,6 +1083,6 @@ let%expect_test "" =
     ("prettify bounds"
      (Ok
       (($12 (bot ({ (b !) | ? })))
-       ($13 (bot (& (((records ((b Top)))) $12) ({ (b $15) | ? }))))
+       ($13 (bot (& ({ (b $15) | ? }) (((records ((b Top)))) $12))))
        ($14 (() top)) ($16 (bot ($14 -> $15))) ($17 (bot ({ (not $16) | ? }))))))
     |}]
