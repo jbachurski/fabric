@@ -221,7 +221,14 @@ module type TypeSystem1 = sig
   end
 end
 
-module type NF = sig
+module FabricTypeSystem1 : TypeSystem1 = struct
+  include FabricTypeSystem
+
+  let join_token = "|"
+  and meet_token = "&"
+end
+
+module type NF0 = sig
   type 't typ
   type arrow
 
@@ -241,17 +248,36 @@ module type NF = sig
   [@@deriving sexp, equal, compare]
 
   and t = clause list [@@deriving sexp, equal, compare]
+end
+
+module type NF = sig
+  type 't typ
+  type arrow
+
+  include NF0 with type 't typ := 't typ and type arrow := arrow
 
   val pretty : t -> Sexp.t
-  val typ : t typ -> t
-  val var : Type_var.t -> t
   val top : t
   val bot : t
+  val typ : t typ -> t
+  val var : Type_var.t -> t
   val join : t -> t -> t
   val meet : t -> t -> t
   val negate : t -> t
   val apply : arrow -> t -> t
   val lattice : t lattice
+
+  val interpret :
+    top:'a ->
+    bot:'a ->
+    typ:('a typ -> 'a) ->
+    var:(Type_var.t -> 'a) ->
+    join:('a -> 'a -> 'a) ->
+    meet:('a -> 'a -> 'a) ->
+    negate:('a -> 'a) ->
+    apply:(arrow -> 'a -> 'a) ->
+    t ->
+    'a
 end
 
 module DNF (M : TypeSystem1) :
@@ -349,6 +375,8 @@ module DNF (M : TypeSystem1) :
                && must_be_sub c.pos_typ c'.pos_typ
                && must_be_sub c'.neg_typ c.neg_typ)
            |> not)
+    |> List.filter ~f:(fun c ->
+           Set.exists c.vars ~f:(fun x -> Set.mem c.vars (Var.negate x)) |> not)
 
   let apply a t =
     List.map t ~f:(fun { vars; pos_typ; neg_typ } ->
@@ -383,15 +411,23 @@ module DNF (M : TypeSystem1) :
       ]
 
   let negate t = List.map t ~f:negate_clause |> List.fold ~init:top ~f:meet
+
+  let interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply =
+    let rec go_clause { vars; pos_typ; neg_typ } =
+      meet
+        (Set.fold vars ~init:top ~f:(fun acc { var = x; neg; app } ->
+             let r = apply app (var x) in
+             let r = match neg with false -> r | true -> negate r in
+             meet acc r))
+        (meet (typ (M.map ~f:go pos_typ)) (negate (typ (M.map ~f:go neg_typ))))
+    and go t =
+      List.fold t ~init:bot ~f:(fun acc clause -> join acc (go_clause clause))
+    in
+    go
 end
 
-let%expect_test "normal forms" =
-  let open DNF (struct
-    include FabricTypeSystem
-
-    let join_token = "|"
-    and meet_token = "&"
-  end) in
+let%expect_test "DNF" =
+  let open DNF (FabricTypeSystem1) in
   let var x = var (Type_var.of_string x) in
   let ( + ) = join and ( * ) = meet and ( ! ) = negate in
   let sexp_of_t = pretty in
@@ -438,8 +474,82 @@ module CNF (M : TypeSystem1) :
     and meet_token = M.join_token
   end
 
-  include DNF (M')
+  module T = DNF (M')
+  include T
+
+  let top = T.bot
+  and bot = T.top
+
+  let typ = T.typ
+  let var = T.var
+
+  let join = T.meet
+  and meet = T.join
+  and lattice = { join = T.lattice.meet; meet = T.lattice.join }
+
+  let negate = T.negate
+  let apply = T.apply
+
+  let interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply t =
+    T.interpret ~top:bot ~bot:top ~typ ~var ~join:meet ~meet:join ~negate ~apply
+      t
 end
+
+let%expect_test "CNF" =
+  let open CNF (FabricTypeSystem1) in
+  let var x = var (Type_var.of_string x) in
+  let ( + ) = join and ( * ) = meet and ( ! ) = negate in
+  let sexp_of_t = pretty in
+  let a = var "a" and b = var "b" and c = var "c" in
+  print_s [%message (a : t)];
+  [%expect {| (a a) |}];
+  print_s [%message (a |> negate : t)];
+  [%expect {| ("a |> negate" (~ a)) |}];
+  print_s [%message (!(a + b) : t)];
+  [%expect {| ("!(a + b)" (& (~ a) (~ b))) |}];
+  print_s [%message (!(a + top) : t)];
+  [%expect {| ("!(a + top)" bot) |}];
+  print_s [%message ((a + b) * (b + c) * (c + a) : t)];
+  [%expect {| ("((a + b) * (b + c)) * (c + a)" (& (| a b) (| a c) (| b c))) |}];
+  print_s [%message ((a * b) + (b * c) + (c * a) : t)];
+  [%expect {| ("((a * b) + (b * c)) + (c * a)" (& (| a b) (| a c) (| b c))) |}]
+
+module FabricCNF = CNF (FabricTypeSystem1)
+module FabricDNF = DNF (FabricTypeSystem1)
+
+let fabric_cnf_to_dnf t =
+  let open FabricDNF in
+  FabricCNF.interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply t
+
+let fabric_dnf_to_cnf t =
+  let open FabricCNF in
+  FabricDNF.interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply t
+
+let%expect_test "NF duality" =
+  let var x = FabricDNF.var (Type_var.of_string x) in
+  let xor t t' = FabricDNF.(join (meet t (negate t')) (meet (negate t) t')) in
+  let test t =
+    print_s (t |> FabricDNF.pretty);
+    print_s (fabric_dnf_to_cnf t |> FabricCNF.pretty);
+    print_s (fabric_cnf_to_dnf (fabric_dnf_to_cnf t) |> FabricDNF.pretty)
+  in
+  test (xor (var "x") (xor (var "y") (var "z")));
+  [%expect
+    {|
+    (| (& x y z) (& x (~ y) (~ z)) (& (~ x) y (~ z)) (& (~ x) (~ y) z))
+    (& (| x y z) (| x (~ y) (~ z)) (| (~ x) y (~ z)) (| (~ x) (~ y) z))
+    (| (& x y z) (& x (~ y) (~ z)) (& (~ x) y (~ z)) (& (~ x) (~ y) z))
+    |}];
+  test
+    (xor
+       (FabricDNF.join (var "x") (var "y"))
+       (FabricDNF.meet (var "y") (var "z")));
+  [%expect
+    {|
+    (| (& x (~ y)) (& x (~ z)) (& y (~ z)))
+    (& (| x y) (| x (~ z)) (| (~ y) (~ z)))
+    (| (& x (~ y)) (& x (~ z)) (& y (~ z)))
+    |}]
 
 module Type (M : TypeSystem) = struct
   open M
@@ -481,24 +591,6 @@ module Type (M : TypeSystem) = struct
     | Combine (Top, t, t') -> join (normalise t) (normalise t')
     | Combine (Bot, t, t') -> meet (normalise t) (normalise t')
     | Complement t -> negate (normalise t)
-
-  let rec algebraise_clause : Normal.clause -> Alg.t =
-   fun { vars; pos_typ; neg_typ } ->
-    Combine
-      ( Bot,
-        Set.fold vars ~init:(Alg.Typ M.top)
-          ~f:(fun acc Normal.Var.{ var; neg; app } ->
-            let r = Alg.Apply (app, Var var) in
-            let r = match neg with false -> r | true -> Complement r in
-            Combine (Bot, acc, r)),
-        Combine
-          ( Bot,
-            Typ (M.map ~f:algebraise pos_typ),
-            Complement (Typ (M.map ~f:algebraise neg_typ)) ) )
-
-  and algebraise : Normal.t -> Alg.t =
-    List.fold ~init:(Alg.Typ M.bot) ~f:(fun acc clause ->
-        Combine (Top, acc, algebraise_clause clause))
 end
 
 module Constraint = struct
@@ -686,6 +778,7 @@ module Solver (M : TypeSystem) = struct
     let open Alg in
     Map.to_alist normal_bounds
     |> concat_map_or_error ~f:(fun (x, (lower, upper)) ->
+           let algebraise = Obj.magic in
            let lower, upper = (algebraise lower, algebraise upper) in
            (lower *<=* Var x) @@ (Var x *<=* upper) @@ (lower *<=* upper))
     |> Or_error.map ~f:collect_bounds
