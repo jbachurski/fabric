@@ -50,6 +50,7 @@ module Type = struct
     val pretty : ('a -> Sexp.t) -> 'a t -> Sexp.t list
     val closed : 'a Field.t Label.Map.t -> 'a t
     val open_ : 'a Field.t Label.Map.t -> 'a t
+    val components : 'a t -> 'a list
     val map : f:('a -> 'b) -> 'a t -> 'b t
     val lift : ('a Field.t -> 'b Field.t -> 'c Field.t) -> 'a t -> 'b t -> 'c t
     val update : 'a t -> Label.t -> 'a Field.t -> 'a t
@@ -93,6 +94,12 @@ module Type = struct
     let open_ m = { m; rest = `Top }
     let map ~f { m; rest } = { m = Map.map ~f:(Field.map ~f) m; rest }
     let update { m; rest } key data = { m = Map.set m ~key ~data; rest }
+
+    let components { m; rest = _ } =
+      Map.data m
+      |> List.concat_map ~f:(function
+           | Top | Bot | Absent -> []
+           | Present t -> [ t ])
 
     let field { m; rest } key =
       Map.find m key |> Option.value ~default:(un rest)

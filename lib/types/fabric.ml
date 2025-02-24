@@ -18,6 +18,18 @@ module FabricTypeSystem :
   let map = map
   let unwrap (T t) = t
 
+  let components =
+    let open Polar in
+    function
+    | Top -> { pos = []; neg = [] }
+    | Bot -> { pos = []; neg = [] }
+    | Int -> { pos = []; neg = [] }
+    | Float -> { pos = []; neg = [] }
+    | Tuple ts -> { pos = ts; neg = [] }
+    | Function (t, t') -> { pos = [ t' ]; neg = [ t ] }
+    | Array t -> { pos = [ t ]; neg = [] }
+    | Record fs -> { pos = Fields.components fs; neg = [] }
+
   let field_decompose sexp ((lower, upper) : 'a Field.t * 'a Field.t) :
       ('a * 'a) list Or_error.t =
     match (lower, upper) with
@@ -73,20 +85,6 @@ module FabricTypeSystem :
         error_s
           [%message "Incompatible types" (lower : Sexp.t) (upper : Sexp.t)]
 
-  let is_top sexp (t : 'a typ) =
-    match t with
-    | Top -> Ok []
-    | _ ->
-        let t = sexp_of_typ sexp t in
-        error_s [%message "Expected top type" (t : Sexp.t)]
-
-  let is_bot sexp (t : 'a typ) =
-    match t with
-    | Bot -> Ok []
-    | _ ->
-        let t = sexp_of_typ sexp t in
-        error_s [%message "Expected bottom type" (t : Sexp.t)]
-
   let top = Top
   let bot = Bot
 
@@ -116,6 +114,9 @@ module FabricTypeSystem :
       ~tops:(fun t -> t)
       ~bots:(fun _ -> Bot)
       ~unrelated:Bot f.meet f.join (field_meet f.meet) t t'
+
+  let join_token = "|"
+  let meet_token = "&"
 
   let%expect_test "Fabric type lattice" =
     let rec meet' (T t) (T t') = T (meet lattice t t')
@@ -202,18 +203,8 @@ module FabricTypeSystem :
   end
 end
 
-module FabricTypeSystem1 :
-  TypeSystem1
-    with type 'a typ = 'a Lang.Fabric.Type.typ
-     and type arrow = fabric_arrow = struct
-  include FabricTypeSystem
-
-  let join_token = "|"
-  and meet_token = "&"
-end
-
-module FabricCNF = CNF (FabricTypeSystem1)
-module FabricDNF = DNF (FabricTypeSystem1)
+module FabricCNF = CNF (FabricTypeSystem)
+module FabricDNF = DNF (FabricTypeSystem)
 
 let fabric_cnf_to_dnf t =
   let open FabricDNF in
@@ -346,6 +337,7 @@ module FabricTyper = struct
   module Field = Lang.Fabric.Type.Field
   module Fields = Lang.Fabric.Type.Fields
   module Solver = Solver (FabricTypeSystem)
+  module Sig = Sig.Make (FabricTypeSystem)
   open Lang.Fabric.Expr
   open Type
 
@@ -461,51 +453,22 @@ let%expect_test "" =
     let open FabricTyper in
     let t, c = Constrained.unwrap (go Var.Map.empty e) in
     let c = Constraint.simp c in
-    print_s [%message (t : Type.Alg.t)];
-    print_s [%message (c : Type.Alg.t Constraint.t)];
-    let bounds = Solver.run c in
-    let prettify =
-      Or_error.map
-        ~f:
-          (Map.map ~f:(fun (lower, upper) ->
-               (Type.DNF.pretty lower, Type.CNF.pretty upper)))
-    in
-    print_s
-      [%message (prettify bounds : (Sexp.t * Sexp.t) Type_var.Map.t Or_error.t)]
+    (* print_s [%message (c : Type.Alg.t Constraint.t)]; *)
+    match Solver.run c with
+    | Ok bounds ->
+        let s = Sig.t bounds (Type.dnf t) in
+        print_s [%message (Sig.pretty s : Sexp.t)]
+    | Error err -> print_s [%message (err : Error.t)]
   in
   test (Proj (Cons [ ("foo", Lit 5); ("bar", Tuple [ Lit 1; Lit 2 ]) ], "foo"));
-  [%expect
-    {|
-    (t (Var $1))
-    (c
-     (With $1
-      (Flow
-       (sub
-        (Typ
-         (Record
-          ((m
-            ((bar (Present (Typ (Tuple ((Typ Int) (Typ Int))))))
-             (foo (Present (Typ Int)))))
-           (rest Absent)))))
-       (sup (Typ (Record ((m ((foo (Present (Var $1))))) (rest Top))))))))
-    ("prettify bounds" (Ok (($1 (int top)))))
-    |}];
+  [%expect {| ("Sig.pretty s" ($1 where ((int <= $1)))) |}];
   test
     (Fun
        ( Atom ("x", T Top),
          Fun (Atom ("y", T Top), Op (Var ("x", T Top), "+", Var ("y", T Top)))
        ));
   [%expect
-    {|
-    (t (Typ (Function (Var $2) (Typ (Function (Var $3) (Typ Int))))))
-    (c
-     (All
-      ((With $2 (Flow (sub (Var $2)) (sup (Typ Top))))
-       (With $3 (Flow (sub (Var $3)) (sup (Typ Top))))
-       (Flow (sub (Var $2)) (sup (Typ Int)))
-       (Flow (sub (Var $3)) (sup (Typ Int))))))
-    ("prettify bounds" (Ok (($2 (bot int)) ($3 (bot int)))))
-    |}];
+    {| ("Sig.pretty s" (($2 -> ($3 -> int)) where (($2 <= int) ($3 <= int)))) |}];
   test
     (Fun
        ( Atom ("x", T Top),
@@ -513,212 +476,80 @@ let%expect_test "" =
        ));
   [%expect
     {|
-    (t (Typ (Function (Var $4) (Typ (Function (Var $5) (Var $6))))))
-    (c
-     (All
-      ((With $4 (Flow (sub (Var $4)) (sup (Typ Top))))
-       (With $5 (Flow (sub (Var $5)) (sup (Typ Top))))
-       (With $6
-        (All
-         ((With $7
-           (Flow (sub (Var $4))
-            (sup (Typ (Record ((m ((foo (Present (Var $7))))) (rest Top)))))))
-          (Flow (sub (Var $7))
-           (sup (Typ (Record ((m ((bar (Present (Var $6))))) (rest Top))))))))))))
-    ("prettify bounds"
-     (Ok (($4 (bot ({ (foo $7) | ? }))) ($7 (bot ({ (bar $6) | ? }))))))
+    ("Sig.pretty s"
+     (($4 -> ($5 -> $6)) where
+      (($4 <= ({ (foo $7) | ? })) ($7 <= ({ (bar $6) | ? })))))
     |}];
   test (Extend ("foo", Lit 0, Cons [ ("foo", Lit 1) ]));
   [%expect
     {|
-    (t (Var $8))
-    (c
-     (With $8
-      (All
-       ((Flow
-         (sub (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent)))))
-         (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
-        (Flow (sub (Var $8))
-         (sup
-          (Apply ((records ((foo Top))))
-           (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent)))))))
-        (Flow (sub (Var $8))
-         (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
-    ("prettify bounds"
-     (Error
-      ("Incompatible record fields"
-       (lower (Present (((vars ()) (pos_typ Int) (neg_typ Bot)))))
-       (upper Absent))))
+    (err
+     ("Incompatible record fields"
+      (lower (Present (((vars ()) (pos_typ Int) (neg_typ Bot))))) (upper Absent)))
     |}];
   test (Extend ("foo", Lit 0, Cons [ ("bar", Lit 1) ]));
   [%expect
-    {|
-    (t (Var $9))
-    (c
-     (With $9
-      (All
-       ((Flow
-         (sub (Typ (Record ((m ((bar (Present (Typ Int))))) (rest Absent)))))
-         (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
-        (Flow (sub (Var $9))
-         (sup
-          (Apply ((records ((foo Top))))
-           (Typ (Record ((m ((bar (Present (Typ Int))))) (rest Absent)))))))
-        (Flow (sub (Var $9))
-         (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))
-    ("prettify bounds" (Ok (($9 (bot ({ (bar int) (foo int) }))))))
-    |}];
+    {| ("Sig.pretty s" ($9 where (($9 <= ({ (bar int) (foo int) }))))) |}];
   test (Fun (Atom ("x", T Top), Extend ("foo", Lit 0, Var ("x", T Top))));
   [%expect
     {|
-    (t (Typ (Function (Var $10) (Var $11))))
-    (c
-     (All
-      ((With $10 (Flow (sub (Var $10)) (sup (Typ Top))))
-       (With $11
-        (All
-         ((Flow (sub (Var $10))
-           (sup (Typ (Record ((m ((foo Absent))) (rest Top))))))
-          (Flow (sub (Var $11)) (sup (Apply ((records ((foo Top)))) (Var $10))))
-          (Flow (sub (Var $11))
-           (sup (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Top))))))))))))
-    ("prettify bounds"
-     (Ok
-      (($10 (((lift (foo)) $11) ({ (foo _) | ? })))
-       ($11 (bot (& ({ (foo int) | ? }) ((drop (foo)) $10)))))))
+    ("Sig.pretty s"
+     (($10 -> $11) where
+      ((((lift (foo)) $11) <= $10 <= ({ (foo _) | ? }))
+       ($11 <= (& ({ (foo int) | ? }) ((drop (foo)) $10))))))
     |}];
   test ("r => {b: r.b.not() | r \\ b}" |> Syntax.parse_exn);
   [%expect
     {|
-    (t (Typ (Function (Var $12) (Var $13))))
-    (c
-     (All
-      ((With $12 (Flow (sub (Var $12)) (sup (Typ Top))))
-       (With $13
-        (All
-         ((With $14
-           (With $15
-            (All
-             ((With $16
-               (All
-                ((With $17
-                  (Flow (sub (Var $12))
-                   (sup
-                    (Typ (Record ((m ((b (Present (Var $17))))) (rest Top)))))))
-                 (Flow (sub (Var $17))
-                  (sup
-                   (Typ (Record ((m ((not (Present (Var $16))))) (rest Top)))))))))
-              (Flow (sub (Var $16)) (sup (Typ (Function (Var $14) (Var $15)))))
-              (Flow (sub (Typ (Tuple ()))) (sup (Var $14)))))))
-          (With $18
-           (All
-            ((Flow (sub (Var $18)) (sup (Apply ((records ((b Top)))) (Var $12))))
-             (Flow (sub (Var $18))
-              (sup (Typ (Record ((m ((b Absent))) (rest Top)))))))))
-          (Flow (sub (Var $18))
-           (sup (Typ (Record ((m ((b Absent))) (rest Top))))))
-          (Flow (sub (Var $13)) (sup (Apply ((records ((b Top)))) (Var $18))))
-          (Flow (sub (Var $13))
-           (sup (Typ (Record ((m ((b (Present (Var $15))))) (rest Top))))))))))))
-    ("prettify bounds"
-     (Ok
-      (($12 ((| ((lift (b)) $13) ((lift (b)) $18)) ({ (b $17) | ? })))
-       ($13 (bot (& ({ (b $15) | ? }) ((drop (b)) $12) ((drop (b)) $18))))
-       ($14 (() top)) ($16 (bot ($14 -> $15))) ($17 (bot ({ (not $16) | ? })))
-       ($18 (((lift (b)) $13) (& ({ (b _) | ? }) ((drop (b)) $12)))))))
+    ("Sig.pretty s"
+     (($12 -> $13) where
+      (((| ((lift (b)) $13) ((lift (b)) $18)) <= $12 <= ({ (b $17) | ? }))
+       ($13 <= (& ({ (b $15) | ? }) ((drop (b)) $12) ((drop (b)) $18)))
+       (() <= $14) ($16 <= ($14 -> $15)) ($17 <= ({ (not $16) | ? }))
+       (((lift (b)) $13) <= $18 <= (& ({ (b _) | ? }) ((drop (b)) $12))))))
     |}];
   test ("f => let z = x => f (v => x x v) in z z" |> Syntax.parse_exn);
   [%expect
     {|
-    (t (Typ (Function (Var $19) (Var $30))))
-    (c
-     (All
-      ((With $19 (Flow (sub (Var $19)) (sup (Typ Top))))
-       (With $20 (Flow (sub (Var $20)) (sup (Typ Top))))
-       (With $21 (Flow (sub (Var $21)) (sup (Typ Top))))
-       (With $22
-        (With $23
-         (All
-          ((With $24 (Flow (sub (Var $24)) (sup (Typ Top))))
-           (With $25
-            (With $26
-             (All
-              ((With $27
-                (With $28
-                 (All
-                  ((Flow (sub (Var $21))
-                    (sup (Typ (Function (Var $27) (Var $28)))))
-                   (Flow (sub (Var $21)) (sup (Var $27)))))))
-               (Flow (sub (Var $28)) (sup (Typ (Function (Var $25) (Var $26)))))
-               (Flow (sub (Var $24)) (sup (Var $25)))))))
-           (Flow (sub (Var $19)) (sup (Typ (Function (Var $22) (Var $23)))))
-           (Flow (sub (Typ (Function (Var $24) (Var $26)))) (sup (Var $22)))))))
-       (Flow (sub (Typ (Function (Var $21) (Var $23)))) (sup (Var $20)))
-       (With $29
-        (With $30
-         (All
-          ((Flow (sub (Var $20)) (sup (Typ (Function (Var $29) (Var $30)))))
-           (Flow (sub (Var $20)) (sup (Var $29))))))))))
-    ("prettify bounds"
-     (Ok
-      (($19 (bot ($22 -> $23)))
-       ($20 (($21 -> $23) (& ((& $27 $29) -> (| $28 $30)) $21 $27 $29)))
-       ($21 ((| ($21 -> $23) $20 $21 $27 $29) (& ($27 -> $28) $21 $27)))
-       ($22 (($24 -> $26) top)) ($23 (bot (& ($25 -> $26) $28 $30)))
-       ($24 (bot $25)) ($25 ($24 top))
-       ($27 ((| ($21 -> $23) $20 $21 $27 $29) (& ($27 -> $28) $21 $27)))
-       ($28 ($23 ($25 -> $26)))
-       ($29 ((| ($21 -> $23) $20) (& ($27 -> $28) $21 $27))) ($30 ($23 top)))))
+    ("Sig.pretty s"
+     (($19 -> $30) where
+      (($19 <= ($22 -> $23))
+       (($21 -> $23) <= $20 <= (& ((& $27 $29) -> (| $28 $30)) $21 $27 $29))
+       ((| ($21 -> $23) $20 $21 $27 $29) <= $21 <= (& ($27 -> $28) $21 $27))
+       (($24 -> $26) <= $22) ($23 <= (& ($25 -> $26) $28 $30)) ($24 <= $25)
+       ($24 <= $25)
+       ((| ($21 -> $23) $20 $21 $27 $29) <= $27 <= (& ($27 -> $28) $21 $27))
+       ($23 <= $28 <= ($25 -> $26))
+       ((| ($21 -> $23) $20) <= $29 <= (& ($27 -> $28) $21 $27)) ($23 <= $30))))
     |}];
   test ("{} + {}" |> Syntax.parse_exn);
   [%expect
     {|
-    (t (Typ Int))
-    (c
-     (All
-      ((Flow (sub (Typ (Record ((m ()) (rest Absent))))) (sup (Typ Int)))
-       (Flow (sub (Typ (Record ((m ()) (rest Absent))))) (sup (Typ Int))))))
-    ("prettify bounds"
-     (Error
-      (("Incompatible types" (lower (Record ((m ()) (rest Absent)))) (upper Int))
-       ("Incompatible types" (lower (Record ((m ()) (rest Absent)))) (upper Int)))))
+    (err
+     (("Incompatible types" (lower (Record ((m ()) (rest Absent)))) (upper Int))
+      ("Incompatible types" (lower (Record ((m ()) (rest Absent)))) (upper Int))))
     |}];
   test ("(1 + 2).foo" |> Syntax.parse_exn);
   [%expect
     {|
-    (t (Var $31))
-    (c
-     (With $31
-      (All
-       ((Flow (sub (Typ Int)) (sup (Typ Int)))
-        (Flow (sub (Typ Int)) (sup (Typ Int)))
-        (Flow (sub (Typ Int))
-         (sup (Typ (Record ((m ((foo (Present (Var $31))))) (rest Top))))))))))
-    ("prettify bounds"
-     (Error
-      ("Incompatible types" (lower Int)
-       (upper
-        (Record
-         ((m
-           ((foo
-             (Present
-              (((vars (((var $31) (neg false) (app ((records ()))))))
-                (pos_typ Top) (neg_typ Bot)))))))
-          (rest Top)))))))
+    (err
+     ("Incompatible types" (lower Int)
+      (upper
+       (Record
+        ((m
+          ((foo
+            (Present
+             (((vars (((var $31) (neg false) (app ((records ()))))))
+               (pos_typ Top) (neg_typ Bot)))))))
+         (rest Top))))))
     |}];
-  test ("({foo : 42}).bar" |> Syntax.parse_exn);
+  test ("{foo : 42}.bar" |> Syntax.parse_exn);
   [%expect
     {|
-    (t (Var $32))
-    (c
-     (With $32
-      (Flow (sub (Typ (Record ((m ((foo (Present (Typ Int))))) (rest Absent)))))
-       (sup (Typ (Record ((m ((bar (Present (Var $32))))) (rest Top))))))))
-    ("prettify bounds"
-     (Error
-      ("Incompatible record fields" (lower Absent)
-       (upper
-        (Present
-         (((vars (((var $32) (neg false) (app ((records ())))))) (pos_typ Top)
-           (neg_typ Bot))))))))
+    (err
+     ("Incompatible record fields" (lower Absent)
+      (upper
+       (Present
+        (((vars (((var $32) (neg false) (app ((records ())))))) (pos_typ Top)
+          (neg_typ Bot)))))))
     |}]

@@ -10,6 +10,20 @@ let next_type_var =
 type ('a, 'args) massage = ('a -> Sexp.t) -> 'args -> ('a * 'a) list Or_error.t
 type 'a lattice = { join : 'a -> 'a -> 'a; meet : 'a -> 'a -> 'a }
 
+module Polar = struct
+  type 'a t = { pos : 'a; neg : 'a } [@@deriving sexp]
+
+  let flip { pos; neg } = { neg = pos; pos = neg }
+  let map ~f { pos; neg } = { pos = f pos; neg = f neg }
+
+  let lift ~f { pos; neg } { pos = pos'; neg = neg' } =
+    { pos = f pos pos'; neg = f neg neg' }
+
+  let join
+      { pos = { pos = pos1; neg = neg1 }; neg = { pos = neg2; neg = pos2 } } =
+    { pos = (pos1, pos2); neg = (neg1, neg2) }
+end
+
 module type TypeSystem = sig
   type 'a typ [@@deriving sexp, equal, compare]
   type simple
@@ -18,13 +32,14 @@ module type TypeSystem = sig
   val pretty : ('a -> Sexp.t) -> 'a typ -> Sexp.t
   val map : f:('a -> 'b) -> 'a typ -> 'b typ
   val unwrap : simple -> simple typ
+  val components : 'a typ -> 'a list Polar.t
   val decompose : ('a, 'a typ * 'a typ) massage
-  val is_top : ('a, 'a typ) massage
-  val is_bot : ('a, 'a typ) massage
   val top : 'a typ
   val bot : 'a typ
   val join : 'a lattice -> 'a typ -> 'a typ -> 'a typ
   val meet : 'a lattice -> 'a typ -> 'a typ -> 'a typ
+  val join_token : string
+  val meet_token : string
 
   module Arrow : sig
     type t = arrow [@@deriving sexp, equal, compare]
@@ -47,8 +62,7 @@ module type TypeSystem1 = sig
   val pretty : ('a -> Sexp.t) -> 'a typ -> Sexp.t
   val map : f:('a -> 'b) -> 'a typ -> 'b typ
   val unwrap : simple -> simple typ
-  val is_top : ('a, 'a typ) massage
-  val is_bot : ('a, 'a typ) massage
+  val decompose : ('a, 'a typ * 'a typ) massage
   val top : 'a typ
   val bot : 'a typ
   val join : 'a lattice -> 'a typ -> 'a typ -> 'a typ
@@ -100,8 +114,10 @@ module type NF = sig
   val pretty : t -> Sexp.t
   val top : t
   val bot : t
-  val typ : t typ -> t
+  val typ : ?neg:bool -> t typ -> t
   val var : Type_var.t -> t
+  val must_top : t -> bool
+  val must_bot : t -> bool
   val join : t -> t -> t
   val meet : t -> t -> t
   val combine_clause : clause -> clause -> clause
@@ -121,6 +137,8 @@ module type NF = sig
     apply:(arrow -> 'a -> 'a) ->
     t ->
     'a
+
+  val subst : Type_var.t -> t -> t -> t
 end
 
 module DNF (M : TypeSystem1) :
@@ -155,12 +173,12 @@ module DNF (M : TypeSystem1) :
   and t = clause list [@@deriving sexp, equal, compare]
 
   let must_be_top ty =
-    match M.is_top (Fn.const (Sexp.Atom "")) ty with
+    match M.decompose (Fn.const (Sexp.Atom "")) (M.top, ty) with
     | Ok [] -> true
     | _ -> false
 
   let must_be_bot ty =
-    match M.is_bot (Fn.const (Sexp.Atom "")) ty with
+    match M.decompose (Fn.const (Sexp.Atom "")) (ty, M.bot) with
     | Ok [] -> true
     | _ -> false
 
@@ -209,8 +227,11 @@ module DNF (M : TypeSystem1) :
       neg_typ = M.Arrow.apply a neg_typ;
     }
 
-  let typ pos_typ : t = [ { top_clause with pos_typ } ]
-  let not_typ neg_typ : t = [ { top_clause with neg_typ } ]
+  let typ ?(neg = false) typ : t =
+    match neg with
+    | false -> [ { top_clause with pos_typ = typ } ]
+    | true -> [ { top_clause with neg_typ = typ } ]
+
   let var x = [ { top_clause with vars = Var.Set.singleton (Var.var x) } ]
 
   let rec simplify cs =
@@ -231,7 +252,7 @@ module DNF (M : TypeSystem1) :
     let neg_typ =
       List.reduce neg_typs ~f:(M.meet lattice) |> Option.value ~default:M.top
     in
-    let cs = cs @ typ pos_typ @ not_typ neg_typ in
+    let cs = cs @ typ pos_typ @ typ ~neg:true neg_typ in
 
     (* Deduplicate *)
     List.dedup_and_sort cs ~compare:compare_clause
@@ -291,6 +312,20 @@ module DNF (M : TypeSystem1) :
       List.fold t ~init:bot ~f:(fun acc clause -> join acc (go_clause clause))
     in
     go
+
+  let must_bot t = match simplify t with [] -> true | _ -> false
+
+  let must_top t =
+    match simplify t with
+    | [ { vars; pos_typ; neg_typ } ]
+      when Set.is_empty vars && must_be_top pos_typ && must_be_bot neg_typ ->
+        true
+    | _ -> false
+
+  let subst v b =
+    interpret ~top ~bot ~typ
+      ~var:(fun v' -> if Type_var.(v = v') then b else var v')
+      ~join ~meet ~negate ~apply
 end
 
 module CNF (M : TypeSystem1) :
@@ -306,8 +341,7 @@ module CNF (M : TypeSystem1) :
 
     module Arrow = M.Arrow
 
-    let is_top = M.is_bot
-    and is_bot = M.is_top
+    let decompose sexp (t, t') = M.decompose sexp (t', t)
 
     let top = M.bot
     and bot = M.top
@@ -329,6 +363,9 @@ module CNF (M : TypeSystem1) :
   and meet = T.join
   and lattice = { join; meet }
 
+  let must_top = T.must_bot
+  and must_bot = T.must_top
+
   let interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply t =
     T.interpret ~top:bot ~bot:top ~typ ~var ~join:meet ~meet:join ~negate ~apply
       t
@@ -337,20 +374,8 @@ end
 module Type (M : TypeSystem) = struct
   open M
   open Lang.Sym
-
-  module DNF = DNF (struct
-    include M
-
-    let join_token = "|"
-    and meet_token = "&"
-  end)
-
-  module CNF = CNF (struct
-    include M
-
-    let join_token = "|"
-    and meet_token = "&"
-  end)
+  module DNF = DNF (M)
+  module CNF = CNF (M)
 
   module Alg = struct
     type dir = Bot | Top [@@deriving sexp, equal, compare]
