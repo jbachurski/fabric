@@ -406,7 +406,7 @@ module FabricTyper = struct
     | Lit _ -> return_typ Int
     | Let (p, e, e') ->
         let* xs, t = pat p in
-        let* e = go env e in
+        let* e = go (push xs env) e in
         let* () = e <: t in
         go (push xs env) e'
     | Fun (p, e) ->
@@ -486,25 +486,20 @@ let%expect_test "" =
     | Error err -> print_s [%message (err : Error.t)]
   in
   test (Proj (Cons [ ("foo", Lit 5); ("bar", Tuple [ Lit 1; Lit 2 ]) ], "foo"));
-  [%expect {| ("Sig.pretty s" ($1 where ((int <= $1)))) |}];
+  [%expect {| ("Sig.pretty s" int) |}];
   test
     (Fun
        ( Atom ("x", T Top),
          Fun (Atom ("y", T Top), Op (Var ("x", T Top), "+", Var ("y", T Top)))
        ));
-  [%expect
-    {| ("Sig.pretty s" (($2 -> ($3 -> int)) where (($2 <= int) ($3 <= int)))) |}];
+  [%expect {| ("Sig.pretty s" (int -> (int -> int))) |}];
   test
     (Fun
        ( Atom ("x", T Top),
          Fun (Atom ("y", T Top), Proj (Proj (Var ("x", T Top), "foo"), "bar"))
        ));
   [%expect
-    {|
-    ("Sig.pretty s"
-     (($4 -> ($5 -> $6)) where
-      (($4 <= ({ (foo $7) | ? })) ($7 <= ({ (bar $6) | ? })))))
-    |}];
+    {| ("Sig.pretty s" (({ (foo ({ (bar $6) | ? })) | ? }) -> (top -> $6))) |}];
   test (Extend ("foo", Lit 0, Cons [ ("foo", Lit 1) ]));
   [%expect
     {|
@@ -518,31 +513,24 @@ let%expect_test "" =
   [%expect
     {|
     ("Sig.pretty s"
-     (($8 -> (& ((drop (foo)) $8) ({ (foo int) | ? }))) where
-      (($8 <= ({ (foo _) | ? })))))
+     ((& $8 ({ (foo _) | ? })) -> (& ((drop (foo)) $8) ({ (foo int) | ? }))))
     |}];
   test ("r => {b: r.b.not() | r \\ b}" |> Syntax.parse_exn);
   [%expect
     {|
     ("Sig.pretty s"
-     (($9 -> (& ((drop (b)) $9) ({ (b $11) | ? }))) where
-      ((() <= $10) ($12 <= ($10 -> $11)) ($13 <= ({ (not $12) | ? }))
-       ($9 <= (& (| ({ (b _) | ? }) (~ ({ (b _) | ? }))) ({ (b $13) | ? }))))))
+     ((& $9 ({ (b ({ (not (() -> $11)) | ? })) | ? })) ->
+      (& ((drop (b)) $9) ({ (b $11) | ? }))))
     |}];
   test ("f => let z = x => f (v => x x v) in z z" |> Syntax.parse_exn);
   [%expect
     {|
     ("Sig.pretty s"
-     (($14 -> $25) where
-      (($14 <= ($17 -> $18))
-       (($16 -> $18) <= $15 <= (& ((& $22 $24) -> (| $23 $25)) $16 $22 $24))
-       ((| ($16 -> $18) $15 $16 $22 $24) <= $16 <= (& ($22 -> $23) $16 $22))
-       (($19 -> $21) <= $17) ($18 <= (& ($20 -> $21) $23 $25)) ($19 <= $20)
-       ($19 <= $20)
-       ((| ($16 -> $18) $15 $16 $22 $24) <= $22 <= (& ($22 -> $23) $16 $22))
-       ($18 <= $23 <= ($20 -> $21))
-       ((| ($16 -> $18) $15) <= $24 <= (& ($22 -> $23) $16 $22)) ($18 <= $25))))
+     ((((& $19 $20) -> $21) -> (& $18 $25 ((| $19 $20) -> $21))) -> (| $18 $25)))
     |}];
+  test ("let f = r => r.foo.bar in f" |> Syntax.parse_exn);
+  [%expect
+    {| ("Sig.pretty s" (({ (foo ({ (bar $28) | ? })) | ? }) -> $28)) |}];
   test ("{} + {}" |> Syntax.parse_exn);
   [%expect
     {|
@@ -560,7 +548,7 @@ let%expect_test "" =
         ((m
           ((foo
             (Present
-             (((vars (((var $26) (neg false) (app ((records ()))))))
+             (((vars (((var $30) (neg false) (app ((records ()))))))
                (pos_typ Top) (neg_typ Bot)))))))
          (rest Top))))))
     |}];
@@ -571,6 +559,13 @@ let%expect_test "" =
      ("Incompatible record fields" (lower Absent)
       (upper
        (Present
-        (((vars (((var $27) (neg false) (app ((records ())))))) (pos_typ Top)
+        (((vars (((var $31) (neg false) (app ((records ())))))) (pos_typ Top)
           (neg_typ Bot)))))))
+    |}];
+  test ("let f = g => f (g 0) in f" |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     (((| (& $33 ((| int $36) -> $37)) $37) -> bot) where
+      (($37 <= (& $33 $34 ((| int $36) -> $37))))))
     |}]

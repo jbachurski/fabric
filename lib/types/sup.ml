@@ -247,7 +247,9 @@ module DNF (M : TypeSystem1) :
     List.dedup_and_sort cs ~compare:compare_clause
     (* Eliminate clauses which are trivially bottom *)
     |> List.filter ~f:(fun { vars = _; pos_typ; neg_typ } ->
-           not (must_be_bot pos_typ || must_be_top neg_typ))
+           not
+             ((must_be_bot pos_typ || must_be_top neg_typ)
+             || M.equal_typ equal pos_typ neg_typ))
     (* Eliminate subsumed clauses *)
     |> List.filter ~f:(fun c ->
            List.exists cs ~f:(fun c' ->
@@ -515,6 +517,12 @@ module Solver (M : TypeSystem) = struct
 
   let inv = function Top -> Bot | Bot -> Top
 
+  let lower bound v =
+    if DNF.(equal_clause bound (var_clause v)) then [] else [ Lower (bound, v) ]
+
+  let upper v bound =
+    if CNF.(equal_clause (var_clause v) bound) then [] else [ Upper (v, bound) ]
+
   let rec atomize_decomposition =
     Or_error.bind ~f:(concat_map_or_error ~f:(fun (l, u) -> l *<=* u))
 
@@ -549,7 +557,7 @@ module Solver (M : TypeSystem) = struct
     | { var; neg = false; app } ->
         let app', cup = M.Arrow.swap_left CNF.typ app in
         let%map.Or_error t = [ bound ] *<=* cup in
-        Lower (DNF.apply_clause app' bound, var) :: t
+        lower (DNF.apply_clause app' bound) var @ t
 
   and ( <=** ) (var : DNF.Var.t) (bound : CNF.clause) =
     match var with
@@ -558,7 +566,7 @@ module Solver (M : TypeSystem) = struct
     | { var; neg = false; app } ->
         let app', cap = M.Arrow.swap_right DNF.typ app in
         let%map.Or_error t = cap *<=* [ bound ] in
-        Upper (var, CNF.apply_clause app' bound) :: t
+        upper var (CNF.apply_clause app' bound) @ t
 
   let rec atomize_constraint : Alg.t Constraint.t -> bound list Or_error.t =
     function
