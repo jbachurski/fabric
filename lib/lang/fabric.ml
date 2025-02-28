@@ -39,6 +39,13 @@ module Type = struct
       | Present a -> Present (pos a)
 
     let map ~f = polar_map { pos = f; neg = f }
+
+    let pretty a f : Sexp.t =
+      match f with
+      | Present t -> a t
+      | Bot -> Atom "!"
+      | Top -> Atom "?"
+      | Absent -> Atom "_"
   end
 
   module Fields : sig
@@ -78,15 +85,7 @@ module Type = struct
       let open Sexp in
       (Core.Map.to_alist m
       |> List.map ~f:(fun (l, f) ->
-             List
-               [
-                 Atom (Label.to_string l);
-                 (match f with
-                 | Present t -> a t
-                 | Bot -> Atom "!"
-                 | Top -> Atom "?"
-                 | Absent -> Atom "_");
-               ]))
+             List [ Atom (Label.to_string l); Field.pretty a f ]))
       @
       match rest with
       | `Bot -> [ Atom "|"; Atom "!" ]

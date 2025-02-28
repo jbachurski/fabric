@@ -39,8 +39,8 @@ module FabricTypeSystem :
     | (Absent | Top), Present _
     | (Present _ | Top), Absent
     | (Absent | Present _ | Top), Bot ->
-        let lower = Field.sexp_of_t sexp lower
-        and upper = Field.sexp_of_t sexp upper in
+        let lower = Field.pretty sexp lower
+        and upper = Field.pretty sexp upper in
         error_s
           [%message
             "Incompatible record fields" (lower : Sexp.t) (upper : Sexp.t)]
@@ -82,7 +82,7 @@ module FabricTypeSystem :
         |> Or_error.all
         |> Or_error.map ~f:List.concat
     | _ ->
-        let lower = sexp_of_typ sexp lower and upper = sexp_of_typ sexp upper in
+        let lower = pretty sexp lower and upper = pretty sexp upper in
         error_s
           [%message "Incompatible types" (lower : Sexp.t) (upper : Sexp.t)]
 
@@ -502,11 +502,7 @@ let%expect_test "" =
     {| ("Sig.pretty s" (({ (foo ({ (bar $6) | ? })) | ? }) -> (top -> $6))) |}];
   test (Extend ("foo", Lit 0, Cons [ ("foo", Lit 1) ]));
   [%expect
-    {|
-    (err
-     ("Incompatible record fields"
-      (lower (Present (((vars ()) (pos_typ Int) (neg_typ Bot))))) (upper Absent)))
-    |}];
+    {| (err ("Incompatible record fields" (lower int) (upper _))) |}];
   test (Extend ("foo", Lit 0, Cons [ ("bar", Lit 1) ]));
   [%expect {| ("Sig.pretty s" ({ (bar int) (foo int) })) |}];
   test (Fun (Atom ("x", T Top), Extend ("foo", Lit 0, Var ("x", T Top))));
@@ -534,37 +530,18 @@ let%expect_test "" =
   [%expect
     {|
     (err
-     (("Incompatible types" (lower (Record ((m ()) (rest Absent)))) (upper Int))
-      ("Incompatible types" (lower (Record ((m ()) (rest Absent)))) (upper Int))))
+     (("Incompatible types" (lower ({ })) (upper int))
+      ("Incompatible types" (lower ({ })) (upper int))))
     |}];
   test ("(1 + 2).foo" |> Syntax.parse_exn);
   [%expect
-    {|
-    (err
-     ("Incompatible types" (lower Int)
-      (upper
-       (Record
-        ((m
-          ((foo
-            (Present
-             (((vars (((var $30) (neg false) (app ((records ()))))))
-               (pos_typ Top) (neg_typ Bot)))))))
-         (rest Top))))))
-    |}];
+    {| (err ("Incompatible types" (lower int) (upper ({ (foo $30) | ? })))) |}];
   test ("{foo : 42}.bar" |> Syntax.parse_exn);
   [%expect
-    {|
-    (err
-     ("Incompatible record fields" (lower Absent)
-      (upper
-       (Present
-        (((vars (((var $31) (neg false) (app ((records ())))))) (pos_typ Top)
-          (neg_typ Bot)))))))
-    |}];
+    {| (err ("Incompatible record fields" (lower _) (upper $31))) |}];
   test ("let f = g => f (g 0) in f" |> Syntax.parse_exn);
   [%expect
     {|
     ("Sig.pretty s"
-     (((| (& $33 ((| int $36) -> $37)) $37) -> bot) where
-      (($37 <= (& $33 $34 ((| int $36) -> $37))))))
+     (((| (int -> $37) $37) -> bot) where (($37 <= (int -> $37)))))
     |}]

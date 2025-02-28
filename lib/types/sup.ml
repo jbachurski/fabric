@@ -540,7 +540,7 @@ module Solver (M : TypeSystem) = struct
     (* vars /\ pos_typ /\ ~neg_typ <= bot *)
     match Set.is_empty vars with
     | true ->
-        M.decompose DNF.sexp_of_t (pos_typ, neg_typ)
+        M.decompose DNF.pretty (pos_typ, neg_typ)
         |> Or_error.map
              ~f:(List.map ~f:(fun (lower, upper) -> (lower, dnf_to_cnf upper)))
         |> atomize_decomposition
