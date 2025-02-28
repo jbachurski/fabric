@@ -106,59 +106,68 @@ module Make (M : TypeSystem) = struct
         ~join ~meet ~negate ~apply
     in
     let body = coalesce ~neg:false body in
-    let bounds =
-      Map.mapi bounds' ~f:(fun ~key ~data:(lower, upper) ->
-          ( (if Hash_set.mem recursive (false, key) then
-               coalesce ~neg:false lower
-             else DNF.typ M.bot),
-            if Hash_set.mem recursive (true, key) then coalesce ~neg:true upper
-            else DNF.typ M.top ))
+    let rec go bounds body =
+      let bounds0, body0 = (bounds, body) in
+      let bounds =
+        Map.mapi bounds ~f:(fun ~key ~data:(lower, upper) ->
+            ( (if Hash_set.mem recursive (false, key) then
+                 coalesce ~neg:false lower
+               else DNF.typ M.bot),
+              if Hash_set.mem recursive (true, key) then
+                coalesce ~neg:true upper
+              else DNF.typ M.top ))
+      in
+      let active_vars =
+        dnf_free_vars body
+        @~@ (Map.map bounds ~f:(fun (lower, upper) ->
+                 dnf_free_vars lower @~@ Polar.flip (dnf_free_vars upper))
+            |> Map.data |> polar_concat)
+        |> Polar.map ~f:Type_var.Set.of_list
+      in
+      let bounds =
+        Map.mapi bounds ~f:(fun ~key ~data:(lower, upper) ->
+            ( (if Set.mem active_vars.pos key then lower else DNF.typ M.bot),
+              if Set.mem active_vars.neg key then upper else DNF.typ M.top ))
+      in
+      let rec clear_coalesced ~neg =
+        let open DNF in
+        interpret ~top ~bot
+          ~typ:(fun t ->
+            M.polar_map
+              ~f:
+                Polar.
+                  {
+                    pos = clear_coalesced ~neg;
+                    neg = clear_coalesced ~neg:(not neg);
+                  }
+              t
+            |> DNF.typ)
+          ~var:(fun v ->
+            if Hash_set.mem recursive (neg, v) then var v
+            else
+              match neg with
+              | false ->
+                  if not (Set.mem active_vars.neg v) then typ M.bot else var v
+              | true ->
+                  if not (Set.mem active_vars.pos v) then typ M.top else var v)
+          ~join ~meet ~negate ~apply
+      in
+      let bounds =
+        Map.map bounds ~f:(fun (lower, upper) ->
+            (clear_coalesced ~neg:false lower, clear_coalesced ~neg:true upper))
+      in
+      let body = clear_coalesced ~neg:false body in
+      let bounds =
+        Map.filter bounds ~f:(fun (lower, upper) ->
+            not (DNF.must_bot lower && DNF.must_top upper))
+      in
+      if
+        [%equal: (DNF.t * DNF.t) Type_var.Map.t] bounds bounds0
+        && DNF.equal body body0
+      then { body; bounds }
+      else go bounds body
     in
-    let active_vars =
-      dnf_free_vars body
-      @~@ (Map.map bounds ~f:(fun (lower, upper) ->
-               dnf_free_vars lower @~@ dnf_free_vars upper)
-          |> Map.data |> polar_concat)
-      |> Polar.map ~f:Type_var.Set.of_list
-    in
-    let bounds =
-      Map.mapi bounds ~f:(fun ~key ~data:(lower, upper) ->
-          ( (if Set.mem active_vars.pos key then lower else DNF.typ M.bot),
-            if Set.mem active_vars.neg key then upper else DNF.typ M.top ))
-    in
-    let rec clear_coalesced ~neg =
-      let open DNF in
-      interpret ~top ~bot
-        ~typ:(fun t ->
-          M.polar_map
-            ~f:
-              Polar.
-                {
-                  pos = clear_coalesced ~neg;
-                  neg = clear_coalesced ~neg:(not neg);
-                }
-            t
-          |> DNF.typ)
-        ~var:(fun v ->
-          if Hash_set.mem recursive (neg, v) then var v
-          else
-            match neg with
-            | false ->
-                if not (Set.mem active_vars.neg v) then typ M.bot else var v
-            | true ->
-                if not (Set.mem active_vars.pos v) then typ M.top else var v)
-        ~join ~meet ~negate ~apply
-    in
-    let bounds =
-      Map.map bounds ~f:(fun (lower, upper) ->
-          (clear_coalesced ~neg:false lower, clear_coalesced ~neg:true upper))
-    in
-    let body = clear_coalesced ~neg:false body in
-    let bounds =
-      Map.filter bounds ~f:(fun (lower, upper) ->
-          not (DNF.must_bot lower && DNF.must_top upper))
-    in
-    { bounds; body }
+    go bounds' body
 
   let pretty { bounds; body } =
     let body = DNF.pretty body in

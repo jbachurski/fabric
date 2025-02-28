@@ -529,8 +529,7 @@ let%expect_test "" =
      ((((& $19 $20) -> $21) -> (& $18 $25 ((| $19 $20) -> $21))) -> (| $18 $25)))
     |}];
   test ("let f = r => r.foo.bar in f" |> Syntax.parse_exn);
-  [%expect
-    {| ("Sig.pretty s" (({ (foo ({ (bar $28) | ? })) | ? }) -> $28)) |}];
+  [%expect {| ("Sig.pretty s" (({ (foo ({ (bar $28) | ? })) | ? }) -> $28)) |}];
   test ("{} + {}" |> Syntax.parse_exn);
   [%expect
     {|
