@@ -2,8 +2,10 @@ open Core
 module Type_var = Lang.Sym.Type_var
 module Polar = Lang.Polar
 
+let curr_type_var = ref 0
+
 let next_type_var =
-  let cnt = ref 0 in
+  let cnt = curr_type_var in
   fun () ->
     cnt := !cnt + 1;
     Type_var.of_string ("$" ^ string_of_int !cnt)
@@ -55,6 +57,7 @@ module type TypeSystem1 = sig
 
   val pretty : ('a -> Sexp.t) -> 'a typ -> Sexp.t
   val map : f:('a -> 'b) -> 'a typ -> 'b typ
+  val polar_map : f:('a -> 'b) Polar.t -> 'a typ -> 'b typ
   val unwrap : simple -> simple typ
   val decompose : ('a, 'a typ * 'a typ) massage
   val top : 'a typ
@@ -131,6 +134,19 @@ module type NF = sig
     meet:('a -> 'a -> 'a) ->
     negate:('a -> 'a) ->
     apply:(arrow -> 'a -> 'a) ->
+    t ->
+    'a
+
+  val polar_interpret :
+    top:'a ->
+    bot:'a ->
+    typ:('a typ -> 'a) ->
+    var:(pol:bool -> Type_var.t -> 'a) ->
+    join:('a -> 'a -> 'a) ->
+    meet:('a -> 'a -> 'a) ->
+    negate:('a -> 'a) ->
+    apply:(arrow -> 'a -> 'a) ->
+    pol:bool ->
     t ->
     'a
 
@@ -291,20 +307,27 @@ module DNF (M : TypeSystem1) :
 
   let negate t = List.map t ~f:negate_clause |> List.fold ~init:top ~f:meet
 
-  let interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply =
-    let rec go_clause { vars; pos_typ; neg_typ } =
+  let polar_interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply ~pol =
+    let rec go_clause ~pol { vars; pos_typ; neg_typ } =
+      let f = Polar.{ pos = go ~pol; neg = go ~pol:(not pol) } in
       meet
         (Set.fold vars ~init:top ~f:(fun acc { var = x; neg; app } ->
-             let r = apply app (var x) in
+             let r = apply app (var ~pol x) in
              let r = match neg with false -> r | true -> negate r in
              meet acc r))
-        (meet (typ (M.map ~f:go pos_typ)) (negate (typ (M.map ~f:go neg_typ))))
-    and go t =
-      List.fold t ~init:bot ~f:(fun acc clause -> join acc (go_clause clause))
+        (meet
+           (typ (M.polar_map ~f pos_typ))
+           (negate (typ (M.polar_map ~f neg_typ))))
+    and go ~pol t =
+      List.fold t ~init:bot ~f:(fun acc clause ->
+          join acc (go_clause ~pol clause))
     in
-    go
+    go ~pol
 
-  let must_bot t = match simplify t with [] -> true | _ -> false
+  let interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply =
+    polar_interpret ~top ~bot ~typ
+      ~var:(fun ~pol:_ -> var)
+      ~join ~meet ~negate ~apply ~pol:false
 
   let must_top t =
     match simplify t with
@@ -312,6 +335,8 @@ module DNF (M : TypeSystem1) :
       when Set.is_empty vars && must_be_top pos_typ && must_be_bot neg_typ ->
         true
     | _ -> false
+
+  and must_bot t = match simplify t with [] -> true | _ -> false
 
   let subst v b =
     interpret ~top ~bot ~typ
@@ -328,6 +353,7 @@ module CNF (M : TypeSystem1) :
 
     let pretty = M.pretty
     let map = M.map
+    let polar_map = M.polar_map
     let unwrap = M.unwrap
 
     module Arrow = M.Arrow
@@ -352,7 +378,8 @@ module CNF (M : TypeSystem1) :
 
   let join = T.meet
   and meet = T.join
-  and lattice = { join; meet }
+
+  let lattice = { join; meet }
 
   let must_top = T.must_bot
   and must_bot = T.must_top
@@ -360,6 +387,10 @@ module CNF (M : TypeSystem1) :
   let interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply t =
     T.interpret ~top:bot ~bot:top ~typ ~var ~join:meet ~meet:join ~negate ~apply
       t
+
+  let polar_interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply ~pol t =
+    T.polar_interpret ~top:bot ~bot:top ~typ ~var ~join:meet ~meet:join ~negate
+      ~apply ~pol t
 end
 
 module Type (M : TypeSystem) = struct

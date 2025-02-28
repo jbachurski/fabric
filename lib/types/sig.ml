@@ -58,22 +58,24 @@ module Make (M : TypeSystem) = struct
     module Hash_set = Hash_set.Make (T)
   end
 
+  type dnf = DNF.t
+  type cnf = CNF.t
+
+  let sexp_of_dnf = DNF.pretty
+  let sexp_of_cnf = CNF.pretty
+
   let t bounds body =
+    (* print_s [%message (bounds : (dnf * cnf) Type_var.Map.t) (body : dnf)]; *)
     let bounds' =
       Type_var.Map.map bounds ~f:(fun (lower, upper) ->
           (lower, Type.cnf_to_dnf upper))
     in
     let seen = PolarVar.Hash_set.create () in
     let recursive = PolarVar.Hash_set.create () in
-    let rec coalesce ~neg =
+    let rec coalesce ~neg:pol =
       let open DNF in
-      interpret ~top ~bot
-        ~typ:(fun t ->
-          M.polar_map
-            ~f:Polar.{ pos = coalesce ~neg; neg = coalesce ~neg:(not neg) }
-            t
-          |> DNF.typ)
-        ~var:(fun v ->
+      polar_interpret ~top ~bot ~typ
+        ~var:(fun ~pol:neg v ->
           (* We keep track of recursively seen variables, if one is seen again,
              we simply insert it instead of coalescing its bound *)
           if Hash_set.mem seen (neg, v) then raise (Recursive (neg, v));
@@ -103,7 +105,7 @@ module Make (M : TypeSystem) = struct
           in
           Hash_set.remove seen (neg, v);
           result)
-        ~join ~meet ~negate ~apply
+        ~join ~meet ~negate ~apply ~pol
     in
     let body = coalesce ~neg:false body in
     let rec go bounds body =

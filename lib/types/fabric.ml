@@ -455,10 +455,9 @@ module FabricTyper = struct
              (apply (field_drop f) e')
              (typ (Record (field (Field.Present e) |> Fields.open_))))
     | Op (e, "", e') ->
-        let$ arg = () in
         let$ res = () in
         let* e = go env e and* e' = go env e' in
-        let* () = e <: typ (Function (arg, res)) and* () = e' <: arg in
+        let* () = e <: typ (Function (e', res)) in
         return res
     | Op (e, ("+" | "-" | "*" | "/"), e') ->
         let* e = go env e in
@@ -476,6 +475,7 @@ end
 let%expect_test "" =
   let test e =
     let open FabricTyper in
+    curr_type_var := 0;
     let t, c = Constrained.unwrap (go Var.Map.empty e) in
     let c = Constraint.simp c in
     (* print_s [%message (c : Type.Alg.t Constraint.t)]; *)
@@ -499,33 +499,35 @@ let%expect_test "" =
          Fun (Atom ("y", T Top), Proj (Proj (Var ("x", T Top), "foo"), "bar"))
        ));
   [%expect
-    {| ("Sig.pretty s" (({ (foo ({ (bar $6) | ? })) | ? }) -> (top -> $6))) |}];
+    {| ("Sig.pretty s" (({ (foo ({ (bar $3) | ? })) | ? }) -> (top -> $3))) |}];
   test (Extend ("foo", Lit 0, Cons [ ("foo", Lit 1) ]));
-  [%expect
-    {| (err ("Incompatible record fields" (lower int) (upper _))) |}];
+  [%expect {| (err ("Incompatible record fields" (lower int) (upper _))) |}];
   test (Extend ("foo", Lit 0, Cons [ ("bar", Lit 1) ]));
   [%expect {| ("Sig.pretty s" ({ (bar int) (foo int) })) |}];
   test (Fun (Atom ("x", T Top), Extend ("foo", Lit 0, Var ("x", T Top))));
   [%expect
     {|
     ("Sig.pretty s"
-     ((& $8 ({ (foo _) | ? })) -> (& ((drop (foo)) $8) ({ (foo int) | ? }))))
+     ((& $1 ({ (foo _) | ? })) -> (& ((drop (foo)) $1) ({ (foo int) | ? }))))
     |}];
   test ("r => {b: r.b.not() | r \\ b}" |> Syntax.parse_exn);
   [%expect
     {|
     ("Sig.pretty s"
-     ((& $9 ({ (b ({ (not (() -> $11)) | ? })) | ? })) ->
-      (& ((drop (b)) $9) ({ (b $11) | ? }))))
+     ((& $1 ({ (b ({ (not (() -> $2)) | ? })) | ? })) ->
+      (& ((drop (b)) $1) ({ (b $2) | ? }))))
     |}];
   test ("f => let z = x => f (v => x x v) in z z" |> Syntax.parse_exn);
   [%expect
-    {|
-    ("Sig.pretty s"
-     ((((& $19 $20) -> $21) -> (& $18 $25 ((| $19 $20) -> $21))) -> (| $18 $25)))
-    |}];
+    {| ("Sig.pretty s" ((($5 -> $6) -> (& $4 $8 ($5 -> $6))) -> (| $4 $8))) |}];
+  test
+    ("let y = f => let z = x => f (v => x x v) in z z in \n\n\
+      y (f => n => n * (f (n - 1)))" |> Syntax.parse_exn);
+  [%expect {| ("Sig.pretty s" (int -> int)) |}];
+  test ("let f = x => f (x + 1) in f" |> Syntax.parse_exn);
+  [%expect {| ("Sig.pretty s" (int -> bot)) |}];
   test ("let f = r => r.foo.bar in f" |> Syntax.parse_exn);
-  [%expect {| ("Sig.pretty s" (({ (foo ({ (bar $28) | ? })) | ? }) -> $28)) |}];
+  [%expect {| ("Sig.pretty s" (({ (foo ({ (bar $3) | ? })) | ? }) -> $3)) |}];
   test ("{} + {}" |> Syntax.parse_exn);
   [%expect
     {|
@@ -535,13 +537,9 @@ let%expect_test "" =
     |}];
   test ("(1 + 2).foo" |> Syntax.parse_exn);
   [%expect
-    {| (err ("Incompatible types" (lower int) (upper ({ (foo $30) | ? })))) |}];
+    {| (err ("Incompatible types" (lower int) (upper ({ (foo $1) | ? })))) |}];
   test ("{foo : 42}.bar" |> Syntax.parse_exn);
-  [%expect
-    {| (err ("Incompatible record fields" (lower _) (upper $31))) |}];
+  [%expect {| (err ("Incompatible record fields" (lower _) (upper $1))) |}];
   test ("let f = g => f (g 0) in f" |> Syntax.parse_exn);
   [%expect
-    {|
-    ("Sig.pretty s"
-     (((| (int -> $37) $37) -> bot) where (($37 <= (int -> $37)))))
-    |}]
+    {| ("Sig.pretty s" (((int -> $4) -> bot) where (($4 <= (int -> $4))))) |}]
