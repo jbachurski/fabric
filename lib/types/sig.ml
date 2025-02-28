@@ -45,20 +45,10 @@ module Make (M : TypeSystem) = struct
     | true, false -> Sexp.List [ v; Atom "<="; u ]
     | false, false -> Sexp.List [ l; Atom "<="; v; Atom "<="; u ]
 
-  let t bounds body = { bounds; body }
-  (*
-    match dnf_free_vars body |> ground |> filter_singletons with
-    | v :: _ ->
-        let lower, upper =
-          Map.find bounds v |> Option.value ~default:(DNF.bot, CNF.top)
-        in
-        let upper = Type.cnf_to_dnf upper in
-        let body =
-          DNF.subst v (DNF.join (DNF.meet (DNF.var v) upper) lower) body
-        in
-        { bounds; body }
-    | _ -> { bounds; body }
-    *)
+  let t bounds body =
+    (* let rec go t = { bounds; body = t } in *)
+    (* t body *)
+    { bounds; body }
 
   let pretty { bounds; body } =
     let body = DNF.pretty body in

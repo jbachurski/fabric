@@ -1,2 +1,3 @@
-module Fabric = Fabric
 module Sym = Sym
+module Polar = Polar
+module Fabric = Fabric

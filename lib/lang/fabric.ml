@@ -32,11 +32,13 @@ module Type = struct
     type 'a t = Top | Bot | Absent | Present of 'a
     [@@deriving sexp, equal, compare]
 
-    let map ~f = function
+    let polar_map Polar.{ pos; neg = _ } = function
       | Top -> Top
       | Bot -> Bot
       | Absent -> Absent
-      | Present a -> Present (f a)
+      | Present a -> Present (pos a)
+
+    let map ~f = polar_map { pos = f; neg = f }
   end
 
   module Fields : sig
@@ -51,6 +53,7 @@ module Type = struct
     val closed : 'a Field.t Label.Map.t -> 'a t
     val open_ : 'a Field.t Label.Map.t -> 'a t
     val components : 'a t -> 'a list
+    val polar_map : f:('a -> 'b) Polar.t -> 'a t -> 'b t
     val map : f:('a -> 'b) -> 'a t -> 'b t
     val lift : ('a Field.t -> 'b Field.t -> 'c Field.t) -> 'a t -> 'b t -> 'c t
     val update : 'a t -> Label.t -> 'a Field.t -> 'a t
@@ -92,7 +95,11 @@ module Type = struct
 
     let closed m = { m; rest = `Absent }
     let open_ m = { m; rest = `Top }
-    let map ~f { m; rest } = { m = Map.map ~f:(Field.map ~f) m; rest }
+
+    let polar_map ~f { m; rest } =
+      { m = Map.map ~f:(Field.polar_map f) m; rest }
+
+    let map ~f t = polar_map ~f:{ pos = f; neg = f } t
     let update { m; rest } key data = { m = Map.set m ~key ~data; rest }
 
     let components { m; rest = _ } =
@@ -130,16 +137,17 @@ module Type = struct
 
   type t = T of t typ [@@deriving sexp, equal, compare]
 
-  let map ~f = function
+  let polar_map ~f:Polar.{ pos; neg } = function
     | Top -> Top
     | Bot -> Bot
     | Int -> Int
     | Float -> Float
-    | Tuple ts -> Tuple (List.map ~f ts)
-    | Function (t, t') -> Function (f t, f t')
-    | Array t -> Array (f t)
-    | Record fs -> Record (Fields.map ~f fs)
+    | Tuple ts -> Tuple (List.map ~f:pos ts)
+    | Function (t, t') -> Function (neg t, pos t')
+    | Array t -> Array (pos t)
+    | Record fs -> Record (Fields.map ~f:pos fs)
 
+  let map ~f = polar_map ~f:{ pos = f; neg = f }
   let repr (_ : t) : Repr.t = Atoms [ Box ]
   let unit = Tuple []
 

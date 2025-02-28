@@ -15,6 +15,7 @@ module FabricTypeSystem :
   type arrow = fabric_arrow
 
   let pretty = pretty'
+  let polar_map = polar_map
   let map = map
   let unwrap (T t) = t
 
@@ -185,21 +186,45 @@ module FabricTypeSystem :
                  Fields.update fs l (match data with Top -> Top | Bot -> Bot)))
       | t -> t
 
-    let left_adjoint { records } =
-      {
-        records =
-          Map.map records ~f:(function
-            | Top -> (Bot : dir)
-            | Bot -> failwith "No left adjoint for field morphism to Bot");
-      }
+    let swap_left typ { records } =
+      ( {
+          records =
+            Map.filter_map records ~f:(function
+              | Top -> Some (Bot : dir)
+              | Bot -> None);
+        },
+        typ
+          (if Map.is_empty records then top
+           else
+             Record
+               Fields.
+                 {
+                   m =
+                     Map.filter_map records ~f:(function
+                       | Top -> None
+                       | Bot -> Some Field.Bot);
+                   rest = `Top;
+                 }) )
 
-    let right_adjoint { records } =
-      {
-        records =
-          Map.map records ~f:(function
-            | Bot -> (Top : dir)
-            | Top -> failwith "No right adjoint for field morphism to Top");
-      }
+    let swap_right typ { records } =
+      ( {
+          records =
+            Map.filter_map records ~f:(function
+              | Bot -> Some (Top : dir)
+              | Top -> None);
+        },
+        typ
+          (if Map.is_empty records then bot
+           else
+             Record
+               Fields.
+                 {
+                   m =
+                     Map.filter_map records ~f:(function
+                       | Top -> Some Field.Top
+                       | Bot -> None);
+                   rest = `Bot;
+                 }) )
   end
 end
 
@@ -414,21 +439,21 @@ module FabricTyper = struct
         return f_
     | Restrict (e, f) ->
         let f = Label.of_string f in
-        let$ r = () in
         let* e = go env e in
         let field fd = Label.Map.singleton f fd in
-        let* () = r <: apply (field_drop f) e
-        and* () = r <: typ (Record (field Field.Absent |> Fields.open_)) in
-        return r
+        return
+          (Alg.meet
+             (apply (field_drop f) e)
+             (typ (Record (field Field.Absent |> Fields.open_))))
     | Extend (f, e, e') ->
         let f = Label.of_string f in
-        let$ r = () in
         let* e = go env e and* e' = go env e' in
         let field fd = Label.Map.singleton f fd in
-        let* () = e' <: typ (Record (field Field.Absent |> Fields.open_))
-        and* () = r <: apply (field_drop f) e'
-        and* () = r <: typ (Record (field (Field.Present e) |> Fields.open_)) in
-        return r
+        let* () = e' <: typ (Record (field Field.Absent |> Fields.open_)) in
+        return
+          (Alg.meet
+             (apply (field_drop f) e')
+             (typ (Record (field (Field.Present e) |> Fields.open_))))
     | Op (e, "", e') ->
         let$ arg = () in
         let$ res = () in
@@ -488,39 +513,35 @@ let%expect_test "" =
       (lower (Present (((vars ()) (pos_typ Int) (neg_typ Bot))))) (upper Absent)))
     |}];
   test (Extend ("foo", Lit 0, Cons [ ("bar", Lit 1) ]));
-  [%expect
-    {| ("Sig.pretty s" ($9 where (($9 <= ({ (bar int) (foo int) }))))) |}];
+  [%expect {| ("Sig.pretty s" ({ (bar int) (foo int) })) |}];
   test (Fun (Atom ("x", T Top), Extend ("foo", Lit 0, Var ("x", T Top))));
   [%expect
     {|
     ("Sig.pretty s"
-     (($10 -> $11) where
-      ((((lift (foo)) $11) <= $10 <= ({ (foo _) | ? }))
-       ($11 <= (& ({ (foo int) | ? }) ((drop (foo)) $10))))))
+     (($8 -> (& ((drop (foo)) $8) ({ (foo int) | ? }))) where
+      (($8 <= ({ (foo _) | ? })))))
     |}];
   test ("r => {b: r.b.not() | r \\ b}" |> Syntax.parse_exn);
   [%expect
     {|
     ("Sig.pretty s"
-     (($12 -> $13) where
-      (((| ((lift (b)) $13) ((lift (b)) $18)) <= $12 <= ({ (b $17) | ? }))
-       ($13 <= (& ({ (b $15) | ? }) ((drop (b)) $12) ((drop (b)) $18)))
-       (() <= $14) ($16 <= ($14 -> $15)) ($17 <= ({ (not $16) | ? }))
-       (((lift (b)) $13) <= $18 <= (& ({ (b _) | ? }) ((drop (b)) $12))))))
+     (($9 -> (& ((drop (b)) $9) ({ (b $11) | ? }))) where
+      ((() <= $10) ($12 <= ($10 -> $11)) ($13 <= ({ (not $12) | ? }))
+       ($9 <= (& (| ({ (b _) | ? }) (~ ({ (b _) | ? }))) ({ (b $13) | ? }))))))
     |}];
   test ("f => let z = x => f (v => x x v) in z z" |> Syntax.parse_exn);
   [%expect
     {|
     ("Sig.pretty s"
-     (($19 -> $30) where
-      (($19 <= ($22 -> $23))
-       (($21 -> $23) <= $20 <= (& ((& $27 $29) -> (| $28 $30)) $21 $27 $29))
-       ((| ($21 -> $23) $20 $21 $27 $29) <= $21 <= (& ($27 -> $28) $21 $27))
-       (($24 -> $26) <= $22) ($23 <= (& ($25 -> $26) $28 $30)) ($24 <= $25)
-       ($24 <= $25)
-       ((| ($21 -> $23) $20 $21 $27 $29) <= $27 <= (& ($27 -> $28) $21 $27))
-       ($23 <= $28 <= ($25 -> $26))
-       ((| ($21 -> $23) $20) <= $29 <= (& ($27 -> $28) $21 $27)) ($23 <= $30))))
+     (($14 -> $25) where
+      (($14 <= ($17 -> $18))
+       (($16 -> $18) <= $15 <= (& ((& $22 $24) -> (| $23 $25)) $16 $22 $24))
+       ((| ($16 -> $18) $15 $16 $22 $24) <= $16 <= (& ($22 -> $23) $16 $22))
+       (($19 -> $21) <= $17) ($18 <= (& ($20 -> $21) $23 $25)) ($19 <= $20)
+       ($19 <= $20)
+       ((| ($16 -> $18) $15 $16 $22 $24) <= $22 <= (& ($22 -> $23) $16 $22))
+       ($18 <= $23 <= ($20 -> $21))
+       ((| ($16 -> $18) $15) <= $24 <= (& ($22 -> $23) $16 $22)) ($18 <= $25))))
     |}];
   test ("{} + {}" |> Syntax.parse_exn);
   [%expect
@@ -539,7 +560,7 @@ let%expect_test "" =
         ((m
           ((foo
             (Present
-             (((vars (((var $31) (neg false) (app ((records ()))))))
+             (((vars (((var $26) (neg false) (app ((records ()))))))
                (pos_typ Top) (neg_typ Bot)))))))
          (rest Top))))))
     |}];
@@ -550,6 +571,6 @@ let%expect_test "" =
      ("Incompatible record fields" (lower Absent)
       (upper
        (Present
-        (((vars (((var $32) (neg false) (app ((records ())))))) (pos_typ Top)
+        (((vars (((var $27) (neg false) (app ((records ())))))) (pos_typ Top)
           (neg_typ Bot)))))))
     |}]

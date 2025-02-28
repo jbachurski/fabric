@@ -1,5 +1,6 @@
 open Core
 module Type_var = Lang.Sym.Type_var
+module Polar = Lang.Polar
 
 let next_type_var =
   let cnt = ref 0 in
@@ -10,20 +11,6 @@ let next_type_var =
 type ('a, 'args) massage = ('a -> Sexp.t) -> 'args -> ('a * 'a) list Or_error.t
 type 'a lattice = { join : 'a -> 'a -> 'a; meet : 'a -> 'a -> 'a }
 
-module Polar = struct
-  type 'a t = { pos : 'a; neg : 'a } [@@deriving sexp]
-
-  let flip { pos; neg } = { neg = pos; pos = neg }
-  let map ~f { pos; neg } = { pos = f pos; neg = f neg }
-
-  let lift ~f { pos; neg } { pos = pos'; neg = neg' } =
-    { pos = f pos pos'; neg = f neg neg' }
-
-  let join
-      { pos = { pos = pos1; neg = neg1 }; neg = { pos = neg2; neg = pos2 } } =
-    { pos = (pos1, pos2); neg = (neg1, neg2) }
-end
-
 module type TypeSystem = sig
   type 'a typ [@@deriving sexp, equal, compare]
   type simple
@@ -31,6 +18,7 @@ module type TypeSystem = sig
 
   val pretty : ('a -> Sexp.t) -> 'a typ -> Sexp.t
   val map : f:('a -> 'b) -> 'a typ -> 'b typ
+  val polar_map : f:('a -> 'b) Polar.t -> 'a typ -> 'b typ
   val unwrap : simple -> simple typ
   val components : 'a typ -> 'a list Polar.t
   val decompose : ('a, 'a typ * 'a typ) massage
@@ -49,8 +37,14 @@ module type TypeSystem = sig
     val is_id : t -> bool
     val compose : t -> t -> t
     val apply : t -> 'a typ -> 'a typ
-    val left_adjoint : t -> t
-    val right_adjoint : t -> t
+
+    val swap_left : ('a typ -> 'a) -> t -> t * 'a
+    (** [swap_left] for a type r and morphism g finds a morphism f and type a
+        such that r <= g(x) iff (f(r) <= x and r <= a) *)
+
+    val swap_right : ('a typ -> 'a) -> t -> t * 'a
+    (** [swap_right] for a type t and morphism f finds a morphism g and type b
+        such that f(x) <= r iff (x <= g(r) and b <= r) *)
   end
 end
 
@@ -114,6 +108,8 @@ module type NF = sig
   val pretty : t -> Sexp.t
   val top : t
   val bot : t
+  val typ_clause : ?neg:bool -> t typ -> clause
+  val var_clause : Type_var.t -> clause
   val typ : ?neg:bool -> t typ -> t
   val var : Type_var.t -> t
   val must_top : t -> bool
@@ -206,15 +202,6 @@ module DNF (M : TypeSystem1) :
     | [ c ] -> pretty_clause c
     | t -> List ([ Atom M.join_token ] @ List.map ~f:pretty_clause t)
 
-  let rec _simple t : t =
-    [
-      {
-        vars = Var.Set.empty;
-        pos_typ = M.map ~f:(fun t -> _simple t) (M.unwrap t);
-        neg_typ = M.bot;
-      };
-    ]
-
   let _bot_clause = { vars = Var.Set.empty; pos_typ = M.bot; neg_typ = M.top }
   let top_clause = { vars = Var.Set.empty; pos_typ = M.top; neg_typ = M.bot }
   let bot : t = []
@@ -227,12 +214,14 @@ module DNF (M : TypeSystem1) :
       neg_typ = M.Arrow.apply a neg_typ;
     }
 
-  let typ ?(neg = false) typ : t =
+  let typ_clause ?(neg = false) typ =
     match neg with
-    | false -> [ { top_clause with pos_typ = typ } ]
-    | true -> [ { top_clause with neg_typ = typ } ]
+    | false -> { top_clause with pos_typ = typ }
+    | true -> { top_clause with neg_typ = typ }
 
-  let var x = [ { top_clause with vars = Var.Set.singleton (Var.var x) } ]
+  let typ ?neg typ = [ typ_clause ?neg typ ]
+  let var_clause x = { top_clause with vars = Var.Set.singleton (Var.var x) }
+  let var x = [ var_clause x ]
 
   let rec simplify cs =
     let cs, pos_typs =
@@ -372,7 +361,6 @@ module CNF (M : TypeSystem1) :
 end
 
 module Type (M : TypeSystem) = struct
-  open M
   open Lang.Sym
   module DNF = DNF (M)
   module CNF = CNF (M)
@@ -382,7 +370,7 @@ module Type (M : TypeSystem) = struct
 
     type t =
       | Var of Type_var.t
-      | Typ of t typ
+      | Typ of t M.typ
       | Apply of M.Arrow.t * t
       | Combine of dir * t * t
       | Complement of t
@@ -396,7 +384,7 @@ module Type (M : TypeSystem) = struct
       let go = interpret ~var ~typ ~join ~meet ~negate ~apply in
       match t with
       | Var x -> var x
-      | Typ t -> typ (map ~f:go t)
+      | Typ t -> typ (M.map ~f:go t)
       | Apply (a, t) -> apply a (go t)
       | Combine (Top, t, t') -> join (go t) (go t')
       | Combine (Bot, t, t') -> meet (go t) (go t')
@@ -532,11 +520,12 @@ module Solver (M : TypeSystem) = struct
 
   and ( @@ ) a b = concat_map_or_error ~f:Fn.id [ a; b ]
 
-  and ( *<=* ) (lower : DNF.t) (upper : CNF.t) =
+  and ( *<=* ) (lower : DNF.t) (upper : CNF.t) : bound list Or_error.t =
     List.cartesian_product lower upper
     |> concat_map_or_error ~f:(fun (l, u) -> l **<=** u)
 
-  and ( **<=** ) (lower : DNF.clause) (upper : CNF.clause) =
+  and ( **<=** ) (lower : DNF.clause) (upper : CNF.clause) :
+      bound list Or_error.t =
     let DNF.{ vars; pos_typ; neg_typ } =
       DNF.combine_clause lower (negate_cnf_clause_into_dnf upper)
     in
@@ -550,25 +539,26 @@ module Solver (M : TypeSystem) = struct
     | false ->
         Set.to_list vars
         |> concat_map_or_error ~f:(fun x ->
-               Ok
-                 [
-                   DNF.{ vars = Set.remove vars x; pos_typ; neg_typ }
-                   **<= DNF.Var.negate x;
-                 ])
+               DNF.{ vars = Set.remove vars x; pos_typ; neg_typ }
+               **<= DNF.Var.negate x)
 
-  and ( **<= ) (bound : DNF.clause) (var : DNF.Var.t) =
+  and ( **<= ) (bound : DNF.clause) (var : DNF.Var.t) : bound list Or_error.t =
     match var with
     | { var; neg = true; app } ->
         { var; neg = false; app } <=** negate_dnf_clause_into_cnf bound
     | { var; neg = false; app } ->
-        Lower (DNF.apply_clause (M.Arrow.left_adjoint app) bound, var)
+        let app', cup = M.Arrow.swap_left CNF.typ app in
+        let%map.Or_error t = [ bound ] *<=* cup in
+        Lower (DNF.apply_clause app' bound, var) :: t
 
   and ( <=** ) (var : DNF.Var.t) (bound : CNF.clause) =
     match var with
     | { var; neg = true; app } ->
         negate_cnf_clause_into_dnf bound **<= { var; neg = false; app }
     | { var; neg = false; app } ->
-        Upper (var, CNF.apply_clause (M.Arrow.right_adjoint app) bound)
+        let app', cap = M.Arrow.swap_right DNF.typ app in
+        let%map.Or_error t = cap *<=* [ bound ] in
+        Upper (var, CNF.apply_clause app' bound) :: t
 
   let rec atomize_constraint : Alg.t Constraint.t -> bound list Or_error.t =
     function
