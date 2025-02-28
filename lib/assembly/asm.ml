@@ -83,6 +83,7 @@ let assemble_expr (module Ctx : Context) ~functions =
     match expr with
     | Fun (_, _) -> failwith "cannot assemble first-class functions"
     | Var (x, _) -> !!x
+    | Unify (_, _, e) -> go env e
     | Lit n -> wrap_int (Const.i32' n)
     | Let (p, e, e') ->
         let v = local (source_pattern_repr p) in

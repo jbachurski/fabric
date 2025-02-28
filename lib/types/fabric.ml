@@ -401,9 +401,14 @@ module FabricTyper = struct
     let field_drop l =
       { records = Label.Map.singleton l (Top : Lang.Fabric.Type.dir) }
     in
+    let var x = Map.find_exn env (Var.of_string x) in
     function
-    | Var (x, _) -> return (Map.find_exn env (Var.of_string x))
+    | Var (x, _) -> return (var x)
     | Lit _ -> return_typ Int
+    | Unify (x, x', e) ->
+        let t = var x and t' = var x' in
+        let* () = t <: t' and* () = t' <: t in
+        go env e
     | Let (p, e, e') ->
         let* xs, t = pat p in
         let* e = go (push xs env) e in
@@ -542,4 +547,27 @@ let%expect_test "" =
   [%expect {| (err ("Incompatible record fields" (lower _) (upper $1))) |}];
   test ("let f = g => f (g 0) in f" |> Syntax.parse_exn);
   [%expect
-    {| ("Sig.pretty s" (((int -> $4) -> bot) where (($4 <= (int -> $4))))) |}]
+    {|
+    ("Sig.pretty s"
+     (($2 -> bot) where (($2 <= (int -> $4)) ($4 <= (& $2 (int -> $4))))))
+    |}];
+  test ("r => { self: r | r }" |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     ((& $1 ({ (self _) | ? })) -> (& ((drop (self)) $1) ({ (self $1) | ? }))))
+    |}];
+  test ("(a, b) => a.foo + b.bar" |> Syntax.parse_exn);
+  [%expect
+    {| ("Sig.pretty s" ((({ (foo int) | ? }) ({ (bar int) | ? })) -> int)) |}];
+  test ("(a, b) => let a ~ b in (a, b)" |> Syntax.parse_exn);
+  [%expect {| ("Sig.pretty s" (($1 $1) -> ($1 $1))) |}];
+  test
+    ("let add = x => y => (let z = x.add x y in let x ~ y in let x ~ z in z) \
+      in add" |> Syntax.parse_exn);
+  [%expect {|
+    ("Sig.pretty s"
+     (($2 -> ($2 -> (| $2 $5))) where
+      (($2 <= ({ (add $7) | ? }))
+       ($7 <= ((| $2 $5) -> ((| $2 $5) -> (& $2 $5 ({ (add $7) | ? }))))))))
+    |}]

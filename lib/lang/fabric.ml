@@ -191,6 +191,7 @@ module Expr = struct
   type t =
     | Var of string * Type.t
     | Lit of int
+    | Unify of string * string * t
     | Let of pattern * t * t
     | Fun of pattern * t
     | Tuple of t list
@@ -219,6 +220,8 @@ module Expr = struct
     function
     | Var (x, t) -> pretty_var (x, t)
     | Lit n -> Atom (string_of_int n)
+    | Unify (x, x', e) ->
+        List [ Atom "let"; Atom x; Atom "~"; Atom x'; Atom "in"; pretty e ]
     | Let (x, e, e') ->
         List
           [
@@ -270,6 +273,7 @@ module Expr = struct
         (match e with
         | Var (x, t) -> Var (x, t)
         | Lit n -> Lit n
+        | Unify (x, x', e) -> Unify (x, x', go0 e)
         | Let (x, e, e') -> Let (x, go0 e, go x e')
         | Fun (x, e) -> Fun (x, go x e)
         | Tuple es -> Tuple (List.map es ~f:go0)
@@ -291,6 +295,7 @@ module Expr = struct
     match e with
     | Var (x, t) -> !.(x, t)
     | Lit _ -> z
+    | Unify (_, _, e) -> !!e
     | Let (x, e, e') -> !!e <|> (!!e' <| x)
     | Fun (x, e) -> !!e <| x
     | Tuple es -> List.map ~f:( !! ) es |> List.fold_left ~init:z ~f:( <|> )
@@ -322,6 +327,7 @@ module Expr = struct
   let rec type_expr = function
     | Var (_, t) -> t
     | Lit _ -> T Int
+    | Unify (_, _, e) -> type_expr e
     | Let (_, _, e') -> type_expr e'
     | Fun (x, e) -> T (Function (type_pattern x, type_expr e))
     | Tuple es -> T (Tuple (List.map ~f:type_expr es))

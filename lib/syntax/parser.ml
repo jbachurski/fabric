@@ -132,6 +132,15 @@ let let_ expr =
   and+ e' = expr in
   Let (x, e, e')
 
+let unify expr =
+  let+ () = keyword "let"
+  and+ x = name
+  and+ () = special "~"
+  and+ x' = name
+  and+ () = keyword "in"
+  and+ e = expr in
+  Unify (x, x', e)
+
 let op =
   take_while (fun c -> Char.(c = '+' || c = '-' || c = '*' || c = '/'))
   >>| String.strip
@@ -220,6 +229,7 @@ let expr =
       choice
         [
           let_ expr;
+          unify expr;
           arr expr;
           shape expr;
           proj expr;
@@ -320,7 +330,8 @@ let%expect_test "parse expr" =
   pparse "r => {b: r.b.not() | r}";
   [%expect {| (Ok (r => ({ b = (((r . b) . not) (,)) | r }))) |}];
   pparse "r => {prev: r.next, next: r.prev + r.next | {prev: 5, next: 8}}";
-  [%expect {|
+  [%expect
+    {|
     (Ok
      (r =>
       ({ next = (+ (r . prev) (r . next)) |

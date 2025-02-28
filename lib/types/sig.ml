@@ -48,6 +48,7 @@ module Make (M : TypeSystem) = struct
     | false, false -> Sexp.List [ l; Atom "<="; v; Atom "<="; u ]
 
   exception Recursive of bool * Type_var.t
+  exception Occurs
 
   module PolarVar = struct
     module T = struct
@@ -64,52 +65,83 @@ module Make (M : TypeSystem) = struct
   let sexp_of_dnf = DNF.pretty
   let sexp_of_cnf = CNF.pretty
 
-  let t bounds body =
-    (* print_s [%message (bounds : (dnf * cnf) Type_var.Map.t) (body : dnf)]; *)
-    let bounds' =
-      Type_var.Map.map bounds ~f:(fun (lower, upper) ->
-          (lower, Type.cnf_to_dnf upper))
-    in
-    let seen = PolarVar.Hash_set.create () in
+  let unwrap_dnf_var_clause (c : DNF.clause) =
+    if Set.length c.vars = 1 then
+      let v = Set.min_elt_exn c.vars in
+      let c' = DNF.var_clause v.var in
+      if DNF.equal_clause c c' then Some v.var else None
+    else None
+
+  let unwrap_cnf_var_clause (c : CNF.clause) =
+    if Set.length c.vars = 1 then
+      let v = Set.min_elt_exn c.vars in
+      let c' = CNF.var_clause v.var in
+      if CNF.equal_clause c c' then Some v.var else None
+    else None
+
+  let remove_dnf_var_clause v (t : DNF.t) =
+    List.filter t ~f:(fun c ->
+        match unwrap_dnf_var_clause c with
+        | Some v' -> Type_var.(v <> v')
+        | None -> true)
+
+  let remove_cnf_var_clause v (t : CNF.t) =
+    List.filter t ~f:(fun c ->
+        match unwrap_cnf_var_clause c with
+        | Some v' -> Type_var.(v <> v')
+        | None -> true)
+
+  let t' bounds body =
+    let bounds = Map.map bounds ~f:(fun (l, u) -> (l, Type.cnf_to_dnf u)) in
+    (* print_s [%message (bounds : (dnf * dnf) Type_var.Map.t) (body : dnf)]; *)
     let recursive = PolarVar.Hash_set.create () in
-    let rec coalesce ~neg:pol =
-      let open DNF in
-      polar_interpret ~top ~bot ~typ
-        ~var:(fun ~pol:neg v ->
-          (* We keep track of recursively seen variables, if one is seen again,
-             we simply insert it instead of coalescing its bound *)
-          if Hash_set.mem seen (neg, v) then raise (Recursive (neg, v));
-          Hash_set.add seen (neg, v);
-          let lower, upper =
-            Map.find bounds' v |> Option.value ~default:(bot, top)
-          in
-          let result =
-            try
-              match
-                (* Short-circuit: If definitely recursive, don't descend *)
-                if Hash_set.mem recursive (neg, v) then
-                  raise (Recursive (neg, v))
-                else neg
-              with
-              (* Add a polarised occurence of the variable *)
-              | false -> join (var v) (coalesce ~neg lower)
-              | true -> meet (var v) (coalesce ~neg upper)
-            with
-            | Recursive (neg', v')
-            when Bool.(neg = neg') && Type_var.(v = v')
-            ->
-              (* The variable has recursive bounds - occurs-check here? *)
-              Hash_set.remove seen (neg, v);
-              Hash_set.add recursive (neg, v);
-              var v
-          in
-          Hash_set.remove seen (neg, v);
-          result)
-        ~join ~meet ~negate ~apply ~pol
-    in
-    let body = coalesce ~neg:false body in
     let rec go bounds body =
       let bounds0, body0 = (bounds, body) in
+      let occurs ~neg:neg0 v0 =
+        let open DNF in
+        let seen = PolarVar.Hash_set.create () in
+        let rec go ~neg:pol =
+          polar_interpret ~top ~bot ~typ
+            ~var:(fun ~pol:neg v ->
+              if Hash_set.mem seen (neg, v) || Hash_set.mem recursive (neg, v)
+              then var v0
+              else (
+                if Bool.(neg = neg0) && Type_var.(v = v0) then raise Occurs;
+                Hash_set.add seen (neg, v);
+                let result = go' ~neg v in
+                Hash_set.remove seen (neg, v);
+                result))
+            ~join ~meet ~negate ~apply ~pol
+        and go' ~neg v =
+          let lower, upper =
+            Map.find bounds v |> Option.value ~default:(bot, top)
+          in
+          match neg with
+          | false -> join (var v) (go ~neg lower)
+          | true -> meet (var v) (go ~neg upper)
+        in
+        match ignore (go' ~neg:neg0 v0) with
+        | _ -> false
+        | exception Occurs -> true
+      in
+      let rec coalesce ~neg:pol =
+        let open DNF in
+        polar_interpret ~top ~bot ~typ
+          ~var:(fun ~pol:neg v ->
+            if Hash_set.mem recursive (neg, v) || occurs ~neg v then (
+              Hash_set.add recursive (neg, v);
+              var v)
+            else
+              let lower, upper =
+                Map.find bounds v |> Option.value ~default:(bot, top)
+              in
+              match neg with
+              (* Add a polarised occurence of the variable *)
+              | false -> join (var v) (coalesce ~neg lower)
+              | true -> meet (var v) (coalesce ~neg upper))
+          ~join ~meet ~negate ~apply ~pol
+      in
+      let body = coalesce ~neg:false body in
       let bounds =
         Map.mapi bounds ~f:(fun ~key ~data:(lower, upper) ->
             ( (if Hash_set.mem recursive (false, key) then
@@ -169,7 +201,46 @@ module Make (M : TypeSystem) = struct
       then { body; bounds }
       else go bounds body
     in
-    go bounds' body
+    go bounds body
+
+  let t bounds body =
+    (* print_s [%message (bounds : (dnf * cnf) Type_var.Map.t) (body : dnf)]; *)
+    let sandwiches =
+      Map.mapi bounds ~f:(fun ~key ~data:(lower, upper) ->
+          let lower_vars = List.filter_map ~f:unwrap_dnf_var_clause lower in
+          let upper_vars = List.filter_map ~f:unwrap_cnf_var_clause upper in
+          Set.inter
+            (Type_var.Set.of_list lower_vars)
+            (Type_var.Set.of_list upper_vars)
+          |> fun s -> Set.add s key)
+    in
+    let dnf_subst =
+      let open DNF in
+      interpret ~top ~bot ~typ
+        ~var:(fun v ->
+          (match Map.find sandwiches v with
+          | Some vs -> Set.min_elt_exn vs
+          | None -> v)
+          |> var)
+        ~join ~meet ~negate ~apply
+    in
+    let cnf_subst =
+      let open CNF in
+      interpret ~top ~bot ~typ
+        ~var:(fun v ->
+          (match Map.find sandwiches v with
+          | Some vs -> Set.min_elt_exn vs
+          | None -> v)
+          |> var)
+        ~join ~meet ~negate ~apply
+    in
+    let bounds =
+      Map.mapi bounds ~f:(fun ~key ~data:(l, u) ->
+          ( dnf_subst l |> remove_dnf_var_clause key,
+            cnf_subst u |> remove_cnf_var_clause key ))
+    in
+    let body = dnf_subst body in
+    t' bounds body
 
   let pretty { bounds; body } =
     let body = DNF.pretty body in
