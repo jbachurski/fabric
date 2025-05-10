@@ -551,6 +551,12 @@ let%expect_test "" =
     ("Sig.pretty s"
      (($2 -> bot) where (($2 <= (int -> $4)) ($4 <= (& $2 (int -> $4))))))
     |}];
+  test ("r => { foo: 42 | r }" |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     ((& $1 ({ (foo _) | ? })) -> (& ((drop (foo)) $1) ({ (foo int) | ? }))))
+    |}];
   test ("r => { self: r | r }" |> Syntax.parse_exn);
   [%expect
     {|
@@ -560,14 +566,72 @@ let%expect_test "" =
   test ("(a, b) => a.foo + b.bar" |> Syntax.parse_exn);
   [%expect
     {| ("Sig.pretty s" ((({ (foo int) | ? }) ({ (bar int) | ? })) -> int)) |}];
+  test ("(x, y, z) => x.div (z.add (x.mul x y) z) x" |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     (((& $1 ({ (div ($7 -> ($1 -> $4))) (mul ($1 -> ($2 -> $10))) | ? })) $2
+       (& $3 ({ (add ($10 -> ($3 -> $7))) | ? })))
+      -> $4))
+    |}];
+  (* Experimenting with closed operations *)
   test ("(a, b) => let a ~ b in (a, b)" |> Syntax.parse_exn);
   [%expect {| ("Sig.pretty s" (($1 $1) -> ($1 $1))) |}];
+  test ("let add = x => y => x.add x y in add" |> Syntax.parse_exn);
+  [%expect
+    {| ("Sig.pretty s" ((& $2 ({ (add ($2 -> ($3 -> $4))) | ? })) -> ($3 -> $4))) |}];
+  [%expect {| |}];
+  test
+    ("let add = x => y => (let x ~ y in x.add x y) in add" |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     ((& $2 ({ (add ($2 -> ($2 -> $4))) | ? })) ->
+      ((& $2 ({ (add ($2 -> ($2 -> $4))) | ? })) -> $4)))
+    |}];
   test
     ("let add = x => y => (let z = x.add x y in let x ~ y in let x ~ z in z) \
       in add" |> Syntax.parse_exn);
-  [%expect {|
+  (* TODO: 'a -> 'a -> 'a where 'a <= { add: 'a -> 'a -> 'a } *)
+  [%expect
+    {|
     ("Sig.pretty s"
      (($2 -> ($2 -> (| $2 $5))) where
       (($2 <= ({ (add $7) | ? }))
        ($7 <= ((| $2 $5) -> ((| $2 $5) -> (& $2 $5 ({ (add $7) | ? }))))))))
+    |}];
+  (* TODO: This should simplify to 
+      ('a, 'a, 'a) -> 'a where 'a <= { add: 'a -> 'a -> 'a }
+      The previous two should be good partial steps. *)
+  test
+    ("let add = x => y => (let z = x.add x y in let x ~ y in let x ~ z in z) \
+      in (x, y, z) => add (add x y) z" |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     ((($8 $9
+        (| (& $10 $11 $2 ({ (add $7) | ? })) (& $10 $13 $2 ({ (add $7) | ? }))
+         (& $10 (~ $9))))
+       -> $11)
+      where
+      (((| (& $10 (~ $13) $9) (& $10 $8 $9 (~ ({ (add $7) | ? })))
+         (& $13 $8 (~ ({ (add $7) | ? }))) (& (~ $13) $2) (& (~ $13) $5)
+         (& $2 $8 (~ ({ (add $7) | ? }))) (& $5 $8 (~ ({ (add $7) | ? }))))
+        <= $11)
+       ((| (& $10 (~ $11) $9) (& (~ $11) $13 $8) (& (~ $11) $2) (& (~ $11) $5))
+        <= $13 <=
+        (| (& $11 $2 ({ (add $7) | ? })) (& $13 $2 ({ (add $7) | ? })) (~ $8)))
+       ($2 <= (| (& $11 ({ (add $7) | ? })) (& $13 ({ (add $7) | ? }))))
+       ($7 <=
+        ((| (& $10 $9) (& $13 $8) $2 $5) ->
+         ((| (& $10 $9) (& $13 $8) $2 $5) ->
+          (| (& $11 $2 $5 ({ (add $7) | ? })) (& $13 $2 $5 ({ (add $7) | ? }))))))
+       ($8 <=
+        (| (& (~ $10) (~ $13) (~ $2)) (& $11 (~ $13))
+         (& $11 $2 ({ (add $7) | ? })) (& $13 $2 ({ (add $7) | ? }))
+         (& (~ $13) (~ $2) $9) (& (~ $13) (~ $2) (~ $9))))
+       ($9 <=
+        (| (~ $10) (& $11 $2 ({ (add $7) | ? })) (& (~ $11) (~ $13) $9)
+         (& $13 $2 ({ (add $7) | ? })) (& (~ $2) $9)
+         (& $9 (~ ({ (add $7) | ? }))))))))
     |}]
