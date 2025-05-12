@@ -96,6 +96,10 @@ module type NF0 = sig
   [@@deriving sexp, equal, compare]
 
   and t = clause list [@@deriving sexp, equal, compare]
+
+  module Clause : sig
+    module Set : Set.S with type Elt.t = clause
+  end
 end
 
 module type NF = sig
@@ -199,6 +203,20 @@ module MakeNF (D : IsDual) (M : TypeSystem1) :
   [@@deriving sexp, equal, compare]
 
   and t = clause list [@@deriving sexp, equal, compare]
+
+  module Clause = struct
+    module T = struct
+      type nonrec t = clause = {
+        vars : Var.Set.t;
+        pos_typ : t M.typ;
+        neg_typ : t M.typ;
+      }
+      [@@deriving sexp, equal, compare]
+    end
+
+    include T
+    module Set = Set.Make (T)
+  end
 
   let must_be_top ty =
     match decompose (Fn.const (Sexp.Atom "")) (t_top, ty) with
