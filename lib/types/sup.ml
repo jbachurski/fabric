@@ -36,7 +36,7 @@ module type TypeSystem = sig
     val id : t
     val is_id : t -> bool
     val compose : t -> t -> t
-    val apply : t -> 'a typ -> 'a typ
+    val apply : (t -> 'a -> 'a) -> t -> 'a typ -> 'a typ
 
     val swap_left : ('a typ -> 'a) -> t -> t * 'a
     (** [swap_left] for a type r and morphism g finds a morphism f and type a
@@ -70,7 +70,7 @@ module type TypeSystem1 = sig
     val id : t
     val is_id : t -> bool
     val compose : t -> t -> t
-    val apply : t -> 'a typ -> 'a typ
+    val apply : (t -> 'a -> 'a) -> t -> 'a typ -> 'a typ
   end
 end
 
@@ -239,13 +239,6 @@ module MakeNF (D : IsDual) (M : TypeSystem1) :
   let bot : t = []
   let top : t = [ top_clause ]
 
-  let apply_clause a { vars; pos_typ; neg_typ } =
-    {
-      vars = Var.Set.map vars ~f:(fun x -> Var.apply a x);
-      pos_typ = M.Arrow.apply a pos_typ;
-      neg_typ = M.Arrow.apply a neg_typ;
-    }
-
   let typ_clause ?(neg = false) typ =
     match neg with
     | false -> { top_clause with pos_typ = typ }
@@ -295,6 +288,13 @@ module MakeNF (D : IsDual) (M : TypeSystem1) :
     (* Remove clauses with both a variable and its negation *)
     |> List.filter ~f:(fun c ->
            Set.exists c.vars ~f:(fun x -> Set.mem c.vars (Var.negate x)) |> not)
+
+  and apply_clause a { vars; pos_typ; neg_typ } =
+    {
+      vars = Var.Set.map vars ~f:(fun x -> Var.apply a x);
+      pos_typ = M.Arrow.apply apply a pos_typ;
+      neg_typ = M.Arrow.apply apply a neg_typ;
+    }
 
   and apply a t = List.map t ~f:(apply_clause a) |> simplify
   and join t t' = t @ t' |> simplify

@@ -328,20 +328,25 @@ module StarTypeSystem :
 
     let pretty { iota } = if iota then Sexp.Atom "iota" else Sexp.List []
     let id = { iota = false }
-    let is_id { iota } = not iota
-    let compose x y = if x.iota then { iota = not y.iota } else y
+    let is_id { iota } = match iota with false -> true | true -> false
 
-    let apply { iota } t =
-      match iota with
-      | false -> t
-      | true -> (
+    let compose { iota } { iota = iota' } =
+      match (iota, iota') with
+      | false, false | true, true -> { iota = false }
+      | false, true | true, false -> { iota = true }
+
+    let apply app arr t =
+      let f = app arr in
+      match arr with
+      | { iota = false } -> t
+      | { iota = true } -> (
           match t with
           | Int -> Sized
           | Sized -> Int
-          | Record x -> Product x
-          | Product x -> Record x
-          | Variant x -> Concat x
-          | Concat x -> Variant x
+          | Record x -> Product (RowLabel.map ~f x)
+          | Product x -> Record (RowLabel.map ~f x)
+          | Variant x -> Concat (RowTag.map ~f x)
+          | Concat x -> Variant (RowTag.map ~f x)
           | t -> t)
 
     let swap_left wrap { iota } = ({ iota }, wrap Top)
@@ -514,7 +519,7 @@ let%expect_test "" =
     let t, c = Constrained.unwrap (go Var.Map.empty e) in
     (* print_s [%message (t : StarTyper.Type.Alg.t) (c : Type.Alg.t Constraint.t)]; *)
     let c = Constraint.simp c in
-    print_s [%message (c : Type.Alg.t Constraint.t)];
+    (* print_s [%message (c : Type.Alg.t Constraint.t)]; *)
     match Solver.run c with
     | Ok bounds ->
         (* print_s
@@ -553,7 +558,7 @@ let%expect_test "" =
        ));
   [%expect {| ("Sig.pretty s" ([ # .. # ] int)) |}];
   test (Lam (v "a", Index (vv "a", Record [ (lab "i", Int 0) ])));
-  [%expect {| ("Sig.pretty s" (([ ({! (i int) | ? !}) .. top ] $4) -> $4)) |}];
+  [%expect {| ("Sig.pretty s" (([ ({! (i #) | ? !}) .. top ] $4) -> $4)) |}];
   test (Array (v "x", Product [ (lab "a", Int 5); (lab "b", Int 4) ], vv "x"));
   [%expect
     {|
@@ -564,23 +569,21 @@ let%expect_test "" =
   test
     (Array
        ( v "x",
-         Product [ (lab "a", Int 5); (lab "b", Int 4) ],
+         Product [ (lab "a", Size (Int 5)); (lab "b", Size (Int 4)) ],
          IntOp (Project (vv "x", lab "a"), Project (vv "x", lab "b")) ));
   [%expect
-    {|
-    ("Sig.pretty s"
-     ([ ({! (a int) (b int) | ? !}) .. ({! (a int) (b int) | ? !}) ] int))
-    |}];
+    {| ("Sig.pretty s" ([ ({! (a #) (b #) | ? !}) .. ({! (a #) (b #) | ? !}) ] int)) |}];
   test
     (Lam
        ( v "a",
          Lam (v "b", FloatOp (Index (vv "a", Int 0), Index (vv "b", Int 0))) ));
   [%expect
     {| ("Sig.pretty s" (([ # .. top ] float) -> (([ # .. top ] float) -> float))) |}];
-  (* FIXME: mis-applied iota? *)
+  (* IMPROVE: simplification *)
   test
-    (Lam
+    (Let
        ( v "a",
+         Array (v "x", Size (Int 5), Float 0.0),
          Array
            ( v "x",
              Product [ (lab "a", Shape (vv "a")) ],
@@ -588,8 +591,7 @@ let%expect_test "" =
   [%expect
     {|
     ("Sig.pretty s"
-     (([ (| $6 (iota $9)) .. $4 ] float) ->
-      ([ ({! (a (& $4 (iota $6) $9)) | ? !}) .. ({! (a $4) | ? !}) ] float)))
+     ([ ({! (a (& $5 #)) | ? !}) .. ({! (a (| # $5)) | ? !}) ] float))
     |}];
   test
     (Lam
@@ -608,6 +610,6 @@ let%expect_test "" =
     ("Sig.pretty s"
      (([ (| $10 (iota $13)) .. $5 ] float) ->
       (([ (| $14 (iota $17)) .. $8 ] float) ->
-       ([ ({! (a (& (iota $10) $13 $5)) (b (& (iota $14) $17 $8)) | ? !}) ..
+       ([ ({! (a (& $10 (iota $13) $5)) (b (& $14 (iota $17) $8)) | ? !}) ..
         ({! (a $5) (b $8) | ? !}) ] float))))
     |}]

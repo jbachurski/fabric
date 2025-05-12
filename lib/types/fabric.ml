@@ -176,7 +176,7 @@ module FabricTypeSystem :
             | `Left t | `Right t | `Both (t, _) -> Some t);
       }
 
-    let apply { records } = function
+    let apply _ { records } = function
       | Record fs ->
           Record
             (Map.fold records ~init:fs ~f:(fun ~key:l ~data fs ->
