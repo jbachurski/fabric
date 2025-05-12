@@ -151,7 +151,8 @@ let%expect_test "" =
   test Top Int;
   [%expect {| ("bnd x y" ((T Int) (T Top))) |}];
   test (Fun { arg = T Int; res = T Bot }) (Fun { arg = T Top; res = T Int });
-  [%expect {|
+  [%expect
+    {|
     ("bnd x y"
      ((T (Fun (arg (T Top)) (res (T Bot))))
       (T (Fun (arg (T Int)) (res (T Int))))))
@@ -321,9 +322,6 @@ module StarTypeSystem :
 
   let join l x y = snd (combine l x y)
   and meet l x y = fst (combine l x y)
-
-  let join_token = "|"
-  and meet_token = "&"
 
   module Arrow = struct
     type t = arrow [@@deriving sexp, equal, compare]
@@ -516,7 +514,7 @@ let%expect_test "" =
     let t, c = Constrained.unwrap (go Var.Map.empty e) in
     (* print_s [%message (t : StarTyper.Type.Alg.t) (c : Type.Alg.t Constraint.t)]; *)
     let c = Constraint.simp c in
-    (* print_s [%message (c : Type.Alg.t Constraint.t)]; *)
+    print_s [%message (c : Type.Alg.t Constraint.t)];
     match Solver.run c with
     | Ok bounds ->
         (* print_s
@@ -579,7 +577,7 @@ let%expect_test "" =
          Lam (v "b", FloatOp (Index (vv "a", Int 0), Index (vv "b", Int 0))) ));
   [%expect
     {| ("Sig.pretty s" (([ # .. top ] float) -> (([ # .. top ] float) -> float))) |}];
-  (* FIXME: Simplification bug? Agh!! *)
+  (* FIXME: mis-applied iota? *)
   test
     (Lam
        ( v "a",
@@ -590,8 +588,8 @@ let%expect_test "" =
   [%expect
     {|
     ("Sig.pretty s"
-     (([ bot .. top ] top) ->
-      ([ ({! (a top) | ? !}) .. ({! (a bot) | ? !}) ] float)))
+     (([ (| $6 (iota $9)) .. $4 ] float) ->
+      ([ ({! (a (& $4 (iota $6) $9)) | ? !}) .. ({! (a $4) | ? !}) ] float)))
     |}];
   test
     (Lam
@@ -608,7 +606,8 @@ let%expect_test "" =
   [%expect
     {|
     ("Sig.pretty s"
-     (([ bot .. top ] top) ->
-      (([ bot .. top ] top) ->
-       ([ ({! (a top) (b top) | ? !}) .. ({! (a bot) (b bot) | ? !}) ] float))))
+     (([ (| $10 (iota $13)) .. $5 ] float) ->
+      (([ (| $14 (iota $17)) .. $8 ] float) ->
+       ([ ({! (a (& (iota $10) $13 $5)) (b (& (iota $14) $17 $8)) | ? !}) ..
+        ({! (a $5) (b $8) | ? !}) ] float))))
     |}]

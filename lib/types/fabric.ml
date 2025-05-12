@@ -116,9 +116,6 @@ module FabricTypeSystem :
       ~bots:(fun _ -> Bot)
       ~unrelated:Bot f.meet f.join (field_meet f.meet) t t'
 
-  let join_token = "|"
-  let meet_token = "&"
-
   let%expect_test "Fabric type lattice" =
     let rec meet' (T t) (T t') = T (meet lattice t t')
     and join' (T t) (T t') = T (join lattice t t')
@@ -335,7 +332,7 @@ let%expect_test "CNF" =
          (typ (Lang.Fabric.Type.Function (typ Top, typ Int)))
          (typ (Lang.Fabric.Type.Function (typ Int, typ Bot)))
         : t)];
-  [%expect {| (int -> int) |}];
+  [%expect {| (top -> bot) |}];
   print_s
     [%sexp
       (meet
@@ -346,7 +343,7 @@ let%expect_test "CNF" =
             (Lang.Fabric.Type.Function
                (typ (Lang.Fabric.Type.Function (typ Int, typ Int)), typ Bot)))
         : t)];
-  [%expect {| ((int -> top) -> int) |}];
+  [%expect {| ((int -> top) -> bot) |}];
   print_s
     [%sexp
       (FabricDNF.meet
@@ -637,29 +634,11 @@ let%expect_test "" =
   [%expect
     {|
     ("Sig.pretty s"
-     ((($8 $9
-        (| (& $10 $11 $2 ({ (add $7) | ? })) (& $10 $13 $2 ({ (add $7) | ? }))
-         (& $10 (~ $9))))
-       -> $11)
+     ((((& $11 $13 $8 ({ (add $7) | ? })) (& $11 $13 $9 ({ (add $7) | ? }))
+        (& $10 $11 $13 ({ (add $7) | ? })))
+       -> (| $10 $11 $13 $5 $8 $9))
       where
-      (((| (& $10 (~ $13) $9) (& $10 $8 $9 (~ ({ (add $7) | ? })))
-         (& $13 $8 (~ ({ (add $7) | ? }))) (& (~ $13) $2) (& (~ $13) $5)
-         (& $2 $8 (~ ({ (add $7) | ? }))) (& $5 $8 (~ ({ (add $7) | ? }))))
-        <= $11)
-       ((| (& $10 (~ $11) $9) (& (~ $11) $13 $8) (& (~ $11) $2) (& (~ $11) $5))
-        <= $13 <=
-        (| (& $11 $2 ({ (add $7) | ? })) (& $13 $2 ({ (add $7) | ? })) (~ $8)))
-       ($2 <= (| (& $11 ({ (add $7) | ? })) (& $13 ({ (add $7) | ? }))))
-       ($7 <=
-        ((| (& $10 $9) (& $13 $8) $2 $5) ->
-         ((| (& $10 $9) (& $13 $8) $2 $5) ->
-          (| (& $11 $2 $5 ({ (add $7) | ? })) (& $13 $2 $5 ({ (add $7) | ? }))))))
-       ($8 <=
-        (| (& (~ $10) (~ $13) (~ $2)) (& $11 (~ $13))
-         (& $11 $2 ({ (add $7) | ? })) (& $13 $2 ({ (add $7) | ? }))
-         (& (~ $13) (~ $2) $9) (& (~ $13) (~ $2) (~ $9))))
-       ($9 <=
-        (| (~ $10) (& $11 $2 ({ (add $7) | ? })) (& (~ $11) (~ $13) $9)
-         (& $13 $2 ({ (add $7) | ? })) (& (~ $2) $9)
-         (& $9 (~ ({ (add $7) | ? }))))))))
+      (($7 <=
+        ((| $10 $13 $5 $8 $9) ->
+         ((| $10 $13 $5 $8 $9) -> (& $11 $13 $5 ({ (add $7) | ? }))))))))
     |}]

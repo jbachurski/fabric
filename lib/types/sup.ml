@@ -28,8 +28,6 @@ module type TypeSystem = sig
   val bot : 'a typ
   val join : 'a lattice -> 'a typ -> 'a typ -> 'a typ
   val meet : 'a lattice -> 'a typ -> 'a typ -> 'a typ
-  val join_token : string
-  val meet_token : string
 
   module Arrow : sig
     type t = arrow [@@deriving sexp, equal, compare]
@@ -64,8 +62,6 @@ module type TypeSystem1 = sig
   val bot : 'a typ
   val join : 'a lattice -> 'a typ -> 'a typ -> 'a typ
   val meet : 'a lattice -> 'a typ -> 'a typ -> 'a typ
-  val join_token : string
-  val meet_token : string
 
   module Arrow : sig
     type t = arrow [@@deriving sexp, equal, compare]
@@ -153,8 +149,28 @@ module type NF = sig
   val subst : Type_var.t -> t -> t -> t
 end
 
-module DNF (M : TypeSystem1) :
+module type IsDual = sig
+  val dual : bool
+end
+
+module MakeNF (D : IsDual) (M : TypeSystem1) :
   NF with type 't typ := 't M.typ and type arrow := M.Arrow.t = struct
+  include D
+
+  let join_token, meet_token =
+    match dual with false -> ("|", "&") | true -> ("&", "|")
+
+  let decompose s (x, y) =
+    match dual with
+    | false -> M.decompose s (x, y)
+    | true -> M.decompose s (y, x)
+
+  let t_join, t_meet =
+    match dual with false -> (M.join, M.meet) | true -> (M.meet, M.join)
+
+  let t_top, t_bot =
+    match dual with false -> (M.top, M.bot) | true -> (M.bot, M.top)
+
   module Var = struct
     module T = struct
       type t = { var : Type_var.t; neg : bool; app : M.Arrow.t }
@@ -185,12 +201,12 @@ module DNF (M : TypeSystem1) :
   and t = clause list [@@deriving sexp, equal, compare]
 
   let must_be_top ty =
-    match M.decompose (Fn.const (Sexp.Atom "")) (M.top, ty) with
+    match decompose (Fn.const (Sexp.Atom "")) (t_top, ty) with
     | Ok [] -> true
     | _ -> false
 
   let must_be_bot ty =
-    match M.decompose (Fn.const (Sexp.Atom "")) (ty, M.bot) with
+    match decompose (Fn.const (Sexp.Atom "")) (ty, t_bot) with
     | Ok [] -> true
     | _ -> false
 
@@ -207,19 +223,19 @@ module DNF (M : TypeSystem1) :
       else [ List [ Atom "~"; M.pretty pretty neg_typ ] ]
     in
     match os with
-    | [] -> M.pretty pretty M.top
+    | [] -> M.pretty pretty t_top
     | [ c ] -> c
-    | os -> List (Atom M.meet_token :: os)
+    | os -> List (Atom meet_token :: os)
 
   and pretty =
     let open Sexp in
     function
-    | [] -> M.pretty pretty M.bot
+    | [] -> M.pretty pretty t_bot
     | [ c ] -> pretty_clause c
-    | t -> List ([ Atom M.join_token ] @ List.map ~f:pretty_clause t)
+    | t -> List ([ Atom join_token ] @ List.map ~f:pretty_clause t)
 
-  let _bot_clause = { vars = Var.Set.empty; pos_typ = M.bot; neg_typ = M.top }
-  let top_clause = { vars = Var.Set.empty; pos_typ = M.top; neg_typ = M.bot }
+  let _bot_clause = { vars = Var.Set.empty; pos_typ = t_bot; neg_typ = t_top }
+  let top_clause = { vars = Var.Set.empty; pos_typ = t_top; neg_typ = t_bot }
   let bot : t = []
   let top : t = [ top_clause ]
 
@@ -252,10 +268,12 @@ module DNF (M : TypeSystem1) :
     in
 
     let pos_typ =
-      List.reduce pos_typs ~f:(M.join lattice) |> Option.value ~default:M.bot
+      List.reduce pos_typs ~f:(t_join (lattice ()))
+      |> Option.value ~default:t_bot
     in
     let neg_typ =
-      List.reduce neg_typs ~f:(M.meet lattice) |> Option.value ~default:M.top
+      List.reduce neg_typs ~f:(t_meet (lattice ()))
+      |> Option.value ~default:t_top
     in
     let cs = cs @ typ pos_typ @ typ ~neg:true neg_typ in
 
@@ -284,8 +302,8 @@ module DNF (M : TypeSystem1) :
   and meet_clause t t' =
     {
       vars = Set.union t.vars t'.vars;
-      pos_typ = M.meet lattice t.pos_typ t'.pos_typ;
-      neg_typ = M.join lattice t.neg_typ t'.neg_typ;
+      pos_typ = t_meet (lattice ()) t.pos_typ t'.pos_typ;
+      neg_typ = t_join (lattice ()) t.neg_typ t'.neg_typ;
     }
 
   and meet t t' =
@@ -293,7 +311,10 @@ module DNF (M : TypeSystem1) :
     |> List.map ~f:(fun (c, c') -> meet_clause c c')
     |> simplify
 
-  and lattice = { join; meet }
+  and lattice () =
+    match dual with
+    | false -> { join; meet }
+    | true -> { join = meet; meet = join }
 
   let combine_clause = meet_clause
 
@@ -308,6 +329,11 @@ module DNF (M : TypeSystem1) :
   let negate t = List.map t ~f:negate_clause |> List.fold ~init:top ~f:meet
 
   let polar_interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply ~pol =
+    let (top, bot), (join, meet) =
+      match dual with
+      | false -> ((top, bot), (join, meet))
+      | true -> ((bot, top), (meet, join))
+    in
     let rec go_clause ~pol { vars; pos_typ; neg_typ } =
       let f = Polar.{ pos = go ~pol; neg = go ~pol:(not pol) } in
       meet
@@ -342,56 +368,22 @@ module DNF (M : TypeSystem1) :
     interpret ~top ~bot ~typ
       ~var:(fun v' -> if Type_var.(v = v') then b else var v')
       ~join ~meet ~negate ~apply
-end
 
-module CNF (M : TypeSystem1) :
-  NF with type 't typ := 't M.typ and type arrow := M.Arrow.t = struct
-  module M' = struct
-    type 't typ = 't M.typ [@@deriving sexp, equal, compare]
-    type simple = M.simple
-    type arrow = M.arrow
-
-    let pretty = M.pretty
-    let map = M.map
-    let polar_map = M.polar_map
-    let unwrap = M.unwrap
-
-    module Arrow = M.Arrow
-
-    let decompose sexp (t, t') = M.decompose sexp (t', t)
-
-    let top = M.bot
-    and bot = M.top
-
-    let join = M.meet
-    and meet = M.join
-
-    let join_token = M.meet_token
-    and meet_token = M.join_token
-  end
-
-  module T = DNF (M')
-  include T
-
-  let top = T.bot
-  and bot = T.top
-
-  let join = T.meet
-  and meet = T.join
+  let (top, bot), (join, meet), (must_top, must_bot) =
+    match dual with
+    | false -> ((top, bot), (join, meet), (must_top, must_bot))
+    | true -> ((bot, top), (meet, join), (must_bot, must_top))
 
   let lattice = { join; meet }
-
-  let must_top = T.must_bot
-  and must_bot = T.must_top
-
-  let interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply t =
-    T.interpret ~top:bot ~bot:top ~typ ~var ~join:meet ~meet:join ~negate ~apply
-      t
-
-  let polar_interpret ~top ~bot ~typ ~var ~join ~meet ~negate ~apply ~pol t =
-    T.polar_interpret ~top:bot ~bot:top ~typ ~var ~join:meet ~meet:join ~negate
-      ~apply ~pol t
 end
+
+module DNF = MakeNF (struct
+  let dual = false
+end)
+
+module CNF = MakeNF (struct
+  let dual = true
+end)
 
 module Type (M : TypeSystem) = struct
   open Lang.Sym
