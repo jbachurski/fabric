@@ -328,7 +328,35 @@ let%expect_test "CNF" =
          |> fabric_cnf_to_dnf)
        |> fabric_dnf_to_cnf
         : t)];
-  [%expect {| ({ (bar int) (foo int) }) |}]
+  [%expect {| ({ (bar int) (foo int) }) |}];
+  print_s
+    [%sexp
+      (meet
+         (typ (Lang.Fabric.Type.Function (typ Top, typ Int)))
+         (typ (Lang.Fabric.Type.Function (typ Int, typ Bot)))
+        : t)];
+  [%expect {| (int -> int) |}];
+  print_s
+    [%sexp
+      (meet
+         (typ
+            (Lang.Fabric.Type.Function
+               (typ (Lang.Fabric.Type.Function (typ Top, typ Top)), typ Int)))
+         (typ
+            (Lang.Fabric.Type.Function
+               (typ (Lang.Fabric.Type.Function (typ Int, typ Int)), typ Bot)))
+        : t)];
+  [%expect {| ((int -> top) -> int) |}];
+  print_s
+    [%sexp
+      (FabricDNF.meet
+         (typ (Lang.Fabric.Type.Function (typ Top, typ Int))
+         |> fabric_cnf_to_dnf)
+         (typ (Lang.Fabric.Type.Function (typ Int, typ Bot))
+         |> fabric_cnf_to_dnf)
+       |> fabric_dnf_to_cnf
+        : t)];
+  [%expect {| (top -> bot) |}]
 
 let%expect_test "NF duality" =
   let var x = FabricDNF.var (Type_var.of_string x) in
