@@ -20,3 +20,10 @@ module Label =
       let module_name = "Label"
     end)
     ()
+
+module Tag =
+  String_id.Make
+    (struct
+      let module_name = "Tag"
+    end)
+    ()

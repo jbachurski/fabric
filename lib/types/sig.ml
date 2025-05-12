@@ -97,6 +97,7 @@ module Make (M : TypeSystem) = struct
     let recursive = PolarVar.Hash_set.create () in
     let rec go bounds body =
       let bounds0, body0 = (bounds, body) in
+      (* print_s [%message (bounds : (dnf * dnf) Type_var.Map.t) (body : dnf)]; *)
       let occurs ~neg:neg0 v0 =
         let open DNF in
         let seen = PolarVar.Hash_set.create () in
@@ -158,6 +159,10 @@ module Make (M : TypeSystem) = struct
             |> Map.data |> polar_concat)
         |> Polar.map ~f:Type_var.Set.of_list
       in
+      (* 
+      print_s [%message (bounds : (dnf * dnf) Type_var.Map.t) (body : dnf)];
+      print_s [%message (active_vars : Type_var.Set.t Polar.t)]; 
+      *)
       let bounds =
         Map.mapi bounds ~f:(fun ~key ~data:(lower, upper) ->
             ( (if Set.mem active_vars.pos key then lower else DNF.typ M.bot),

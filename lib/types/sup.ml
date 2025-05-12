@@ -629,6 +629,7 @@ module Solver (M : TypeSystem) = struct
     in
     let bs' = iteration bs in
     Or_error.bind bs' ~f:(fun bs' ->
+        (* print_s [%message (bs' : (DNF.t * CNF.t) Type_var.Map.t)]; *)
         if [%equal: (DNF.t * CNF.t) Type_var.Map.t] bs bs' then Ok bs
         else iterate bs')
 
