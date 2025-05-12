@@ -401,6 +401,8 @@ module StarTyper = struct
 
   let push x x_ (env : _ Var.Map.t) = Map.add_exn ~key:x ~data:x_ env
 
+  type arraytyp = { lower : Alg.t; upper : Alg.t; elem : Alg.t }
+
   let rec go (env : Alg.t Var.Map.t) : Expr.t -> Alg.t Constrained.t =
     let open Constrained in
     let iota = apply { iota = true } in
@@ -413,11 +415,25 @@ module StarTyper = struct
         |> Map.map ~f:(fun e -> Entry.Present (go env e))
         |> Map.map ~f:all_in_entry)
     in
-    let lu () =
-      let$ lower = () in
-      let$ upper = () in
-      let* () = lower <: upper in
-      return (lower, upper)
+    (* try to avoid creating new type variables *)
+    let genfun t =
+      match t with
+      | Alg.Typ (Fun { arg; res }) -> return (arg, res)
+      | _ ->
+          let$ arg = () in
+          let$ res = () in
+          let* () = t <: typ (Fun { arg; res }) in
+          return (arg, res)
+    in
+    let genarray t =
+      match t with
+      | Alg.Typ (Array { lower; upper; elem }) -> return { lower; upper; elem }
+      | _ ->
+          let$ lower = () in
+          let$ upper = () in
+          let$ elem = () in
+          let* () = t <: typ (Array { lower; upper; elem }) in
+          return { lower; upper; elem }
     in
     function
     | Int _ -> return_typ Int
@@ -441,9 +457,9 @@ module StarTyper = struct
         let* e = go (push x t env) e in
         return_typ (Fun { arg = t; res = e })
     | App (e, e') ->
-        let$ res = () in
         let* e = go env e and* e' = go env e' in
-        let* () = e <: typ (Fun { arg = e'; res }) in
+        let* arg, res = genfun e in
+        let* () = e' <: arg in
         return res
     | Size e ->
         let* e = go env e in
@@ -454,26 +470,19 @@ module StarTyper = struct
         let* () = e <: typ Sized in
         return_typ Int
     | Array (x, e, e') ->
-        let$ t = () in
         let* e = go env e in
-        let* elem = go (push x t env) e' in
-        let lower = iota t and upper = e in
-        let* () = lower <: upper in
-        return_typ (Array { lower; upper; elem })
+        let* elem = go (push x (iota e) env) e' in
+        return_typ (Array { lower = e; upper = e; elem })
     | Index (e, e') ->
-        let* lower, upper = lu () in
-        let$ elem = () in
         let* e = go env e in
         let* e' = go env e' in
-        let* () = e <: typ (Array { lower; upper; elem }) in
+        let* { lower; upper = _; elem } = genarray e in
         let* () = iota e' <: lower in
         return elem
     | Shape e ->
-        let* lower, upper = lu () in
-        let$ elem = () in
         let* e = go env e in
-        let* () = e <: typ (Array { lower; upper; elem }) in
-        return upper
+        let* a = genarray e in
+        return a.upper
     | Record r ->
         let* m = cons Label.Map.of_alist_exn r in
         return_typ (Record { m; rest = `Top })
@@ -536,20 +545,24 @@ let%expect_test "" =
   let lab x = Label.of_string x in
   test (Int 0);
   [%expect {| ("Sig.pretty s" int) |}];
-  (* IMPROVE: simplify this further? *)
   test (Array (v "i", Size (Int 10), vv "i"));
-  [%expect {| ("Sig.pretty s" ([ (& (iota $1) #) .. # ] $1)) |}];
+  [%expect {| ("Sig.pretty s" ([ # .. # ] int)) |}];
   test (Array (v "i", Size (Int 10), IntOp (vv "i", Int 0)));
   [%expect {| ("Sig.pretty s" ([ # .. # ] int)) |}];
-  (* IMPROVE: this should probably raise a type error - the type is useless
-              it is related to above: the only non-bot iota under # is int *)
   test (Array (v "i", Size (Int 10), FloatOp (vv "i", Float 0.0)));
-  [%expect {| ("Sig.pretty s" ([ bot .. # ] float)) |}];
+  [%expect {| (err ("Incompatible types" (lower int) (upper float))) |}];
   test (Lam (v "x", Index (vv "x", Int 0)));
   [%expect {| ("Sig.pretty s" (([ # .. top ] $4) -> $4)) |}];
   test (Lam (v "s", Shape (Array (v "x", vv "s", vv "x"))));
-  (* IMPROVE: simplify x & y -> x | y, also up to iota applications *)
-  [%expect {| ("Sig.pretty s" ((& $1 $3) -> (| $1 $3))) |}];
+  [%expect {| ("Sig.pretty s" ($1 -> $1)) |}];
+  test (Project (Record [ (lab "a", Int 0) ], lab "a"));
+  [%expect {| ("Sig.pretty s" int) |}];
+  test (Project (Record [ (lab "a", Int 0) ], lab "b"));
+  [%expect {| (err ("Incompatible record fields" (lower ?) (upper $1))) |}];
+  test
+    (Array
+       (v "x", Product [ (lab "a", Size (Int 0)) ], Project (vv "x", lab "b")));
+  [%expect {| (err ("Incompatible record fields" (lower ?) (upper $1))) |}];
   test
     (Let
        ( v "x",
@@ -559,13 +572,21 @@ let%expect_test "" =
   [%expect {| ("Sig.pretty s" ([ # .. # ] int)) |}];
   test (Lam (v "a", Index (vv "a", Record [ (lab "i", Int 0) ])));
   [%expect {| ("Sig.pretty s" (([ ({! (i #) | ? !}) .. top ] $4) -> $4)) |}];
-  test (Array (v "x", Product [ (lab "a", Int 5); (lab "b", Int 4) ], vv "x"));
+  test
+    (Array
+       ( v "x",
+         Product [ (lab "a", Size (Int 5)); (lab "b", Size (Int 4)) ],
+         vv "x" ));
   [%expect
     {|
     ("Sig.pretty s"
-     ([ (& (iota $1) ({! (a int) (b int) | ? !})) .. ({! (a int) (b int) | ? !})
-      ] $1))
+     ([ ({! (a #) (b #) | ? !}) .. ({! (a #) (b #) | ? !}) ]
+      ({ (a int) (b int) | ? })))
     |}];
+  test
+    (Array
+       (v "x", Product [ (lab "a", Size (Int 5)) ], Project (vv "x", lab "b")));
+  [%expect {| (err ("Incompatible record fields" (lower ?) (upper $1))) |}];
   test
     (Array
        ( v "x",
@@ -591,7 +612,7 @@ let%expect_test "" =
   [%expect
     {|
     ("Sig.pretty s"
-     ([ ({! (a (& $5 #)) | ? !}) .. ({! (a (| # $5)) | ? !}) ] float))
+     ([ ({! (a (& $3 #)) | ? !}) .. ({! (a (| # $3)) | ? !}) ] float))
     |}];
   test
     (Lam
@@ -608,8 +629,8 @@ let%expect_test "" =
   [%expect
     {|
     ("Sig.pretty s"
-     (([ (| $10 (iota $13)) .. $5 ] float) ->
-      (([ (| $14 (iota $17)) .. $8 ] float) ->
-       ([ ({! (a (& $10 (iota $13) $5)) (b (& $14 (iota $17) $8)) | ? !}) ..
-        ({! (a $5) (b $8) | ? !}) ] float))))
+     (([ (| $10 $4 (iota $9)) .. (& $10 $4 (iota $9)) ] float) ->
+      (([ (| (iota $13) $14 $7) .. (& (iota $13) $14 $7) ] float) ->
+       ([ ({! (a (& $10 $4 (iota $9))) (b (& (iota $13) $14 $7)) | ? !}) ..
+        ({! (a $4) (b $7) | ? !}) ] float))))
     |}]
