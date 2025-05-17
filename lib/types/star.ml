@@ -77,17 +77,20 @@ end = struct
 
   let field { m; rest } key = Map.find m key |> Option.value ~default:(un rest)
 
-  let subs { m; rest } { m = m'; rest = rest' } =
+  let subs' { m; rest } { m = m'; rest = rest' } =
     Map.merge m m' ~f:(fun ~key:_ -> function
       | `Both (t, t') -> Some (t, t')
       | `Left t -> Some (t, un rest')
       | `Right t' -> Some (un rest, t'))
 
-  let lift f first second =
-    {
-      m = subs first second |> Map.map ~f:(fun (fd, fd') -> f fd fd');
-      rest = nu (f (un first.rest) (un second.rest));
-    }
+    let subs fs fs' =
+      subs' fs fs' |> Map.add_exn ~key:(Key.of_string "*") ~data:(un fs.rest, un fs'.rest)
+
+    let lift f first second =
+      {
+        m = subs' first second |> Map.map ~f:(fun (fd, fd') -> f fd fd');
+        rest = nu (f (un first.rest) (un second.rest));
+      }
 end
 
 module RowLabel = Row (Label)
