@@ -288,7 +288,7 @@ let%expect_test "parse expr" =
   [%expect
     {|
     (Ok
-     (let (x : ({ (bar int) (foo int) })) = ({ (foo int) (bar int) }) in
+     (let (x : ({ (bar int) (foo int) | _ })) = ({ (foo int) (bar int) }) in
       (x . foo)))
     |}];
   pparse
@@ -298,8 +298,8 @@ let%expect_test "parse expr" =
   [%expect
     {|
     (Ok
-     (let f = ((x : ({ (bar int) (foo int) })) => (x . foo)) in
-      (let g = ((x : ({ (bar int) (foo int) })) => (x . bar)) in
+     (let f = ((x : ({ (bar int) (foo int) | _ })) => (x . foo)) in
+      (let g = ((x : ({ (bar int) (foo int) | _ })) => (x . bar)) in
        (let x = ({ (foo 4) (bar 3) }) in (%print_i32 ((- (f x) g) x))))))
     |}];
   pparse
@@ -323,7 +323,7 @@ let%expect_test "parse expr" =
   [%expect
     {|
     (Ok
-     (let (tab : ([] ([] ({ (prod int) (sum int) })))) =
+     (let (tab : ([] ([] ({ (prod int) (sum int) | _ })))) =
       ([ i : 5 ] => ([ j : 5 ] => ({ (sum (+ i j)) (prod (* i j)) }))) in
       (,)))
     |}];

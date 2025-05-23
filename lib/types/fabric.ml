@@ -141,7 +141,7 @@ module FabricTypeSystem :
                   ]
                |> Fields.closed))
             (rcd "foo" (Present (T Int)))));
-    [%expect {| ({ (bar int) (foo int) }) |}];
+    [%expect {| ({ (bar int) (foo int) | _ }) |}];
     ()
 
   module Arrow = struct
@@ -201,7 +201,7 @@ module FabricTypeSystem :
                      Map.filter_map records ~f:(function
                        | Top -> None
                        | Bot -> Some Field.Bot);
-                   rest = `Top;
+                   rest = Top;
                  }) )
 
     let swap_right typ { records } =
@@ -221,7 +221,7 @@ module FabricTypeSystem :
                      Map.filter_map records ~f:(function
                        | Top -> Some Field.Top
                        | Bot -> None);
-                   rest = `Bot;
+                   rest = Bot;
                  }) )
   end
 end
@@ -276,7 +276,7 @@ let%expect_test "DNF" =
          (rcd [ ("foo", Present (typ Int)) ])
          (rcd ~closed:true [ ("foo", Top); ("bar", Present (typ Int)) ])
         : t)];
-  [%expect {| ({ (bar int) (foo int) }) |}]
+  [%expect {| ({ (bar int) (foo int) | _ }) |}]
 
 let%expect_test "CNF" =
   let open FabricCNF in
@@ -317,7 +317,7 @@ let%expect_test "CNF" =
          (rcd [ ("foo", Present (typ Int)) ])
          (rcd ~closed:true [ ("foo", Top); ("bar", Present (typ Int)) ])
         : t)];
-  [%expect {| ({ (bar int) (foo int) }) |}];
+  [%expect {| ({ (bar int) (foo int) | _ }) |}];
   print_s
     [%sexp
       (FabricDNF.meet
@@ -326,7 +326,7 @@ let%expect_test "CNF" =
          |> fabric_cnf_to_dnf)
        |> fabric_dnf_to_cnf
         : t)];
-  [%expect {| ({ (bar int) (foo int) }) |}];
+  [%expect {| ({ (bar int) (foo int) | _ }) |}];
   print_s
     [%sexp
       (meet
@@ -536,7 +536,7 @@ let%expect_test "" =
   test (Extend ("foo", Lit 0, Cons [ ("foo", Lit 1) ]));
   [%expect {| (err ("Incompatible record fields" (lower int) (upper _))) |}];
   test (Extend ("foo", Lit 0, Cons [ ("bar", Lit 1) ]));
-  [%expect {| ("Sig.pretty s" ({ (bar int) (foo int) })) |}];
+  [%expect {| ("Sig.pretty s" ({ (bar int) (foo int) | _ })) |}];
   test (Fun (Atom ("x", T Top), Extend ("foo", Lit 0, Var ("x", T Top))));
   [%expect
     {|
@@ -565,8 +565,8 @@ let%expect_test "" =
   [%expect
     {|
     (err
-     (("Incompatible types" (lower ({ })) (upper int))
-      ("Incompatible types" (lower ({ })) (upper int))))
+     (("Incompatible types" (lower ({ | _ })) (upper int))
+      ("Incompatible types" (lower ({ | _ })) (upper int))))
     |}];
   test ("(1 + 2).foo" |> Syntax.parse_exn);
   [%expect
@@ -647,4 +647,7 @@ let%expect_test "" =
     |}];
   test ("x => y => (x {quack: y}).noise" |> Syntax.parse_exn);
   [%expect
-    {| ("Sig.pretty s" ((({ (quack $2) }) -> ({ (noise $3) | ? })) -> ($2 -> $3))) |}]
+    {|
+    ("Sig.pretty s"
+     ((({ (quack $2) | _ }) -> ({ (noise $3) | ? })) -> ($2 -> $3)))
+    |}]

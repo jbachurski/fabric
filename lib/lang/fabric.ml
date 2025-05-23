@@ -1,5 +1,7 @@
 open Core
 open Sym
+open Alg
+open Row
 
 module Repr = struct
   type atom = Int32 | Float64 | Box
@@ -32,92 +34,40 @@ module Type = struct
     type 'a t = Top | Bot | Absent | Present of 'a
     [@@deriving sexp, equal, compare]
 
-    let map ~f = function
+    let components = function Top | Absent | Bot -> [] | Present t -> [ t ]
+
+    let polar_map Polar.{ pos; neg = _ } = function
       | Top -> Top
       | Bot -> Bot
       | Absent -> Absent
-      | Present a -> Present (f a)
+      | Present a -> Present (pos a)
 
-    let pretty a f : Sexp.t =
-      match f with
+    let map ~f = polar_map { pos = f; neg = f }
+
+    let pretty a : _ -> Sexp.t = function
       | Present t -> a t
+      | Absent -> Atom "_"
       | Bot -> Atom "!"
       | Top -> Atom "?"
-      | Absent -> Atom "_"
+
+    let combine latt first second =
+      match (first, second) with
+      | Top, x | x, Top -> (x, Top)
+      | Bot, x | x, Bot -> (Bot, x)
+      | Absent, Absent -> (Absent, Absent)
+      | Present x, Present y ->
+          (Present (latt.meet x y), Present (latt.join x y))
+      | _ -> (Bot, Top)
+
+    let meet latt x y = fst (combine latt x y)
+    and join latt x y = snd (combine latt x y)
   end
 
-  module Fields : sig
-    type rest = [ `Absent | `Bot | `Top ]
-    type 'a t = { m : 'a Field.t Label.Map.t; rest : rest }
+  module Fields = struct
+    include Row (Label) (Field)
 
-    val equal : ('a -> 'a -> bool) -> 'a t -> 'a t -> bool
-    val compare : ('a -> 'a -> int) -> 'a t -> 'a t -> int
-    val t_of_sexp : (Sexp.t -> 'a) -> Sexp.t -> 'a t
-    val sexp_of_t : ('a -> Sexp.t) -> 'a t -> Sexp.t
-    val pretty : ('a -> Sexp.t) -> 'a t -> Sexp.t list
-    val closed : 'a Field.t Label.Map.t -> 'a t
-    val open_ : 'a Field.t Label.Map.t -> 'a t
-    val components : 'a t -> 'a list
-    val map : f:('a -> 'b) -> 'a t -> 'b t
-    val lift : ('a Field.t -> 'b Field.t -> 'c Field.t) -> 'a t -> 'b t -> 'c t
-    val update : 'a t -> Label.t -> 'a Field.t -> 'a t
-    val field : 'a t -> Label.t -> 'a Field.t
-    val subs : 'a t -> 'b t -> ('a Field.t * 'b Field.t) Label.Map.t
-  end = struct
-    type rest = [ `Absent | `Bot | `Top ] [@@deriving sexp, equal, compare]
-
-    and 'a t = { m : 'a Field.t Label.Map.t; rest : [ `Absent | `Bot | `Top ] }
-    [@@deriving sexp, equal, compare]
-
-    let un = function `Absent -> Field.Absent | `Bot -> Bot | `Top -> Top
-
-    let nu = function
-      | Field.Absent -> `Absent
-      | Bot -> `Bot
-      | Top -> `Top
-      | Present _ ->
-          failwith "Record cannot be marked as having all fields present"
-
-    let pretty a { m; rest } =
-      let open Sexp in
-      (Core.Map.to_alist m
-      |> List.map ~f:(fun (l, f) ->
-             List [ Atom (Label.to_string l); Field.pretty a f ]))
-      @
-      match rest with
-      | `Bot -> [ Atom "|"; Atom "!" ]
-      | `Top -> [ Atom "|"; Atom "?" ]
-      | `Absent -> []
-
-    let closed m = { m; rest = `Absent }
-    let open_ m = { m; rest = `Top }
-    let map ~f { m; rest } = { m = Map.map ~f:(Field.map ~f) m; rest }
-    let update { m; rest } key data = { m = Map.set m ~key ~data; rest }
-
-    let components { m; rest = _ } =
-      Map.data m
-      |> List.concat_map ~f:(function
-           | Top | Bot | Absent -> []
-           | Present t -> [ t ])
-
-    let field { m; rest } key =
-      Map.find m key |> Option.value ~default:(un rest)
-
-    let subs' { m; rest } { m = m'; rest = rest' } =
-      Map.merge m m' ~f:(fun ~key:_ -> function
-        | `Both (t, t') -> Some (t, t')
-        | `Left t -> Some (t, un rest')
-        | `Right t' -> Some (un rest, t'))
-
-    let subs fs fs' =
-      subs' fs fs'
-      |> Map.add_exn ~key:(Label.of_string "*") ~data:(un fs.rest, un fs'.rest)
-
-    let lift f first second =
-      {
-        m = subs' first second |> Map.map ~f:(fun (fd, fd') -> f fd fd');
-        rest = nu (f (un first.rest) (un second.rest));
-      }
+    let closed m = { m; rest = Absent }
+    let open_ m = { m; rest = Top }
   end
 
   type 't typ =

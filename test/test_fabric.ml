@@ -110,8 +110,8 @@ let%expect_test "compile" =
      let x = {baz: 0, bar: 3, foo: 4, boo: 1} in %print_i32 ((f x) - (g x))";
   [%expect
     {|
-    (let f = ((x : ({ (foo int) })) => (x . foo)) in
-     (let g = ((x : ({ (bar int) })) => (x . bar)) in
+    (let f = ((x : ({ (foo int) | _ })) => (x . foo)) in
+     (let g = ((x : ({ (bar int) | _ })) => (x . bar)) in
       (let x = ({ (baz 0) (bar 3) (foo 4) (boo 1) }) in
        (%print_i32 (- (f x) (g x))))))
     (valid true)
@@ -125,7 +125,7 @@ let%expect_test "compile" =
      %print_i32 (fun 2 3)";
   [%expect
     {|
-    (let (tab : ([] ([] ({ (prod int) (sum int) })))) =
+    (let (tab : ([] ([] ({ (prod int) (sum int) | _ })))) =
      ([ i : 5 ] => ([ j : 5 ] => ({ (sum (+ i j)) (prod (* i j)) }))) in
      (let fun =
       ((i : int) =>
