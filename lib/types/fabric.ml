@@ -641,4 +641,8 @@ let%expect_test "" =
       (($7 <=
         ((| $10 $13 $5 $8 $9) ->
          ((| $10 $13 $5 $8 $9) -> (& $11 $13 $5 ({ (add $7) | ? }))))))))
-    |}]
+    |}];
+  test
+    ("x => y => (x {quack: y}).noise" |> Syntax.parse_exn);
+  [%expect
+    {| ("Sig.pretty s" ((({ (quack $2) }) -> ({ (noise $3) | ? })) -> ($2 -> $3))) |}];
