@@ -7,6 +7,7 @@ open Sup
 module Entry = struct
   type 'a t = Top | Present of 'a | Bot [@@deriving sexp, equal, compare]
 
+  let implicit_in_rest _ = false
   let components t = match t with Top | Bot -> [] | Present t -> [ t ]
 
   let polar_map Polar.{ pos; neg = _ } = function

@@ -31,6 +31,7 @@ module FabricTypeSystem :
     | Function (t, t') -> { pos = [ t' ]; neg = [ t ] }
     | Array t -> { pos = [ t ]; neg = [] }
     | Record fs -> { pos = Fields.components fs; neg = [] }
+    | Variant cs -> { pos = Cases.components cs; neg = [] }
 
   let field_decompose sexp ((lower, upper) : 'a Field.t * 'a Field.t) :
       ('a * 'a) list Or_error.t =
@@ -141,7 +142,7 @@ module FabricTypeSystem :
                   ]
                |> Fields.closed))
             (rcd "foo" (Present (T Int)))));
-    [%expect {| ({ (bar int) (foo int) | _ }) |}];
+    [%expect {| ({ (bar int) (foo int) }) |}];
     ()
 
   module Arrow = struct
@@ -276,7 +277,7 @@ let%expect_test "DNF" =
          (rcd [ ("foo", Present (typ Int)) ])
          (rcd ~closed:true [ ("foo", Top); ("bar", Present (typ Int)) ])
         : t)];
-  [%expect {| ({ (bar int) (foo int) | _ }) |}]
+  [%expect {| ({ (bar int) (foo int) }) |}]
 
 let%expect_test "CNF" =
   let open FabricCNF in
@@ -317,7 +318,7 @@ let%expect_test "CNF" =
          (rcd [ ("foo", Present (typ Int)) ])
          (rcd ~closed:true [ ("foo", Top); ("bar", Present (typ Int)) ])
         : t)];
-  [%expect {| ({ (bar int) (foo int) | _ }) |}];
+  [%expect {| ({ (bar int) (foo int) }) |}];
   print_s
     [%sexp
       (FabricDNF.meet
@@ -326,7 +327,7 @@ let%expect_test "CNF" =
          |> fabric_cnf_to_dnf)
        |> fabric_dnf_to_cnf
         : t)];
-  [%expect {| ({ (bar int) (foo int) | _ }) |}];
+  [%expect {| ({ (bar int) (foo int) }) |}];
   print_s
     [%sexp
       (meet
@@ -387,6 +388,8 @@ module FabricTyper = struct
   module Constrained = Constrained (FabricTypeSystem)
   module Field = Lang.Fabric.Type.Field
   module Fields = Lang.Fabric.Type.Fields
+  module Case = Lang.Fabric.Type.Case
+  module Cases = Lang.Fabric.Type.Cases
   module Solver = Solver (FabricTypeSystem)
   module Sig = Sig.Make (FabricTypeSystem)
   open Lang.Fabric.Expr
@@ -428,6 +431,7 @@ module FabricTyper = struct
       { records = Label.Map.singleton l (Top : Lang.Fabric.Type.dir) }
     in
     let var x = Map.find_exn env (Var.of_string x) in
+    let tagty t c = typ (Variant (Cases.closed (Tag.Map.singleton t c))) in
     function
     | Var (x, _) -> return (var x)
     | Lit _ -> return_typ Int
@@ -485,8 +489,30 @@ module FabricTyper = struct
           (Alg.meet
              (apply (field_drop f) e')
              (typ (Record (field (Field.Present e) |> Fields.open_))))
-    | Tag _ -> failwith "TypeExpr.go: Tag"
-    | Match _ -> failwith "TypeExpr.go: Match"
+    | Tag (t, e) ->
+        let* e = go env e in
+        return (tagty (Tag.of_string t) (Case.Present e))
+    | Match (e, cs) ->
+        let* e = go env e in
+        let* cs =
+          List.map
+            ~f:(fun ((t, x), e) -> (Tag.of_string t, (Var.of_string x, e)))
+            cs
+          |> Tag.Map.of_alist_exn
+          |> Map.map ~f:(fun (x, e) ->
+                 let$ x_ = () in
+                 let* e = go (push [ (x, x_) ] env) e in
+                 return (x_, e))
+          |> all_in_map
+        in
+        let* () =
+          e
+          <: Map.fold cs ~init:(typ Bot) ~f:(fun ~key:t ~data:(x, _) ->
+                 Alg.join (tagty t (Case.Present x)))
+        in
+        return
+          (Map.fold cs ~init:(typ Bot) ~f:(fun ~key:_ ~data:(_, e) ->
+               Alg.join e))
     | Op (e, "", e') ->
         let$ res = () in
         let* e = go env e and* e' = go env e' in
@@ -536,7 +562,7 @@ let%expect_test "" =
   test (Extend ("foo", Lit 0, Cons [ ("foo", Lit 1) ]));
   [%expect {| (err ("Incompatible record fields" (lower int) (upper _))) |}];
   test (Extend ("foo", Lit 0, Cons [ ("bar", Lit 1) ]));
-  [%expect {| ("Sig.pretty s" ({ (bar int) (foo int) | _ })) |}];
+  [%expect {| ("Sig.pretty s" ({ (bar int) (foo int) })) |}];
   test (Fun (Atom ("x", T Top), Extend ("foo", Lit 0, Var ("x", T Top))));
   [%expect
     {|
@@ -565,8 +591,8 @@ let%expect_test "" =
   [%expect
     {|
     (err
-     (("Incompatible types" (lower ({ | _ })) (upper int))
-      ("Incompatible types" (lower ({ | _ })) (upper int))))
+     (("Incompatible types" (lower ({ })) (upper int))
+      ("Incompatible types" (lower ({ })) (upper int))))
     |}];
   test ("(1 + 2).foo" |> Syntax.parse_exn);
   [%expect
@@ -647,7 +673,10 @@ let%expect_test "" =
     |}];
   test ("x => y => (x {quack: y}).noise" |> Syntax.parse_exn);
   [%expect
-    {|
-    ("Sig.pretty s"
-     ((({ (quack $2) | _ }) -> ({ (noise $3) | ? })) -> ($2 -> $3)))
-    |}]
+    {| ("Sig.pretty s" ((({ (quack $2) }) -> ({ (noise $3) | ? })) -> ($2 -> $3))) |}];
+  test ("x => T x" |> Syntax.parse_exn);
+  [%expect {| ("Sig.pretty s" ($1 -> ([ (T $1) ]))) |}];
+  test ("x => match x with A a => 0" |> Syntax.parse_exn);
+  [%expect {| ("Sig.pretty s" (([ (A top) ]) -> int)) |}];
+  test ("x => match x with A a => 0 | B b => 1 | C c => 2" |> Syntax.parse_exn);
+  [%expect {| ("Sig.pretty s" (top -> int)) |}]

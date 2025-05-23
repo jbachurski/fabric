@@ -34,6 +34,7 @@ module Type = struct
     type 'a t = Top | Bot | Absent | Present of 'a
     [@@deriving sexp, equal, compare]
 
+    let implicit_in_rest = function Absent -> true | _ -> false
     let components = function Top | Absent | Bot -> [] | Present t -> [ t ]
 
     let polar_map Polar.{ pos; neg = _ } = function
@@ -63,10 +64,46 @@ module Type = struct
     and join latt x y = snd (combine latt x y)
   end
 
+  module Case = struct
+    type 'a t = Top | Bot | Present of 'a [@@deriving sexp, equal, compare]
+
+    let implicit_in_rest = function Bot -> true | _ -> false
+    let components = function Top | Bot -> [] | Present t -> [ t ]
+
+    let polar_map Polar.{ pos; neg = _ } = function
+      | Top -> Top
+      | Bot -> Bot
+      | Present a -> Present (pos a)
+
+    let map ~f = polar_map { pos = f; neg = f }
+
+    let pretty a : _ -> Sexp.t = function
+      | Present t -> a t
+      | Bot -> Atom "!"
+      | Top -> Atom "?"
+
+    let combine latt first second =
+      match (first, second) with
+      | Top, x | x, Top -> (x, Top)
+      | Bot, x | x, Bot -> (Bot, x)
+      | Present x, Present y ->
+          (Present (latt.meet x y), Present (latt.join x y))
+
+    let meet latt x y = fst (combine latt x y)
+    and join latt x y = snd (combine latt x y)
+  end
+
   module Fields = struct
     include Row (Label) (Field)
 
     let closed m = { m; rest = Absent }
+    let open_ m = { m; rest = Top }
+  end
+
+  module Cases = struct
+    include Row (Tag) (Case)
+
+    let closed m = { m; rest = Bot }
     let open_ m = { m; rest = Top }
   end
 
@@ -79,6 +116,7 @@ module Type = struct
     | Function of 't * 't
     | Array of 't
     | Record of 't Fields.t
+    | Variant of 't Cases.t
   [@@deriving sexp, equal, compare]
 
   type t = T of t typ [@@deriving sexp, equal, compare]
@@ -92,6 +130,7 @@ module Type = struct
     | Function (t, t') -> Function (neg t, pos t')
     | Array t -> Array (pos t)
     | Record fs -> Record (Fields.map ~f:pos fs)
+    | Variant cs -> Variant (Cases.map ~f:pos cs)
 
   let map ~f = polar_map ~f:{ pos = f; neg = f }
   let repr (_ : t) : Repr.t = Atoms [ Box ]
@@ -108,6 +147,7 @@ module Type = struct
     | Function (s, t) -> List [ pretty_t s; Atom "->"; pretty_t t ]
     | Array t -> List [ Atom "[]"; pretty_t t ]
     | Record fs -> List ([ Atom "{" ] @ Fields.pretty pretty_t fs @ [ Atom "}" ])
+    | Variant fs -> List ([ Atom "[" ] @ Cases.pretty pretty_t fs @ [ Atom "]" ])
 
   let rec pretty (T t) = pretty' pretty t
 
@@ -150,7 +190,7 @@ module Expr = struct
     | Restrict of t * string
     | Extend of string * t * t
     | Tag of string * t
-    | Match of t * (string * t) list
+    | Match of t * ((string * string) * t) list
     | Intrinsic of string * t
     | Op of t * string * t
     | Closure of int * (string * Type.t) list * Type.t
@@ -210,7 +250,8 @@ module Expr = struct
             pretty e;
             List
               (List.map
-                 ~f:(fun (t, e) -> List [ Atom t; Atom "=>"; pretty e ])
+                 ~f:(fun ((t, x), e) ->
+                   List [ Atom t; Atom x; Atom "=>"; pretty e ])
                  cs);
           ]
     | Intrinsic (f, e) -> List [ Atom ("%" ^ f); pretty e ]

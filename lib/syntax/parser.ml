@@ -4,7 +4,7 @@ open Lang.Fabric
 open Lang.Sym
 open Expr
 
-let init_name_char c = Char.(is_alpha c || c = '_')
+let init_name_char c = Char.(is_lowercase c || c = '_')
 let name_char c = Char.(is_alphanum c || c = '_')
 
 let token ~deny w =
@@ -27,7 +27,16 @@ let any_name =
 
 let name =
   let* x = any_name in
-  if String.(x = "let" || x = "in") then fail "keyword" else return x
+  if String.(x = "let" || x = "in" || x = "match" || x = "with") then
+    fail "keyword"
+  else return x
+
+let label = name
+let init_tag_char c = Char.(is_uppercase c)
+
+let tag =
+  let+ first = satisfy init_tag_char and+ main = take_while name_char in
+  Char.to_string first ^ main
 
 let%expect_test "parse var" =
   let parse s = parse_string ~consume:All name s |> Result.ok in
@@ -197,24 +206,50 @@ let proj expr =
   let+ e = atomic expr
   and+ ls =
     many1
-      (let+ () = special "." and+ l = name in
+      (let+ () = special "." and+ l = label in
        l)
   in
   List.fold ls ~init:e ~f:(fun e l -> Proj (e, l))
 
 let restrict expr =
-  let+ e = atomic expr and+ () = special "\\" and+ l = name in
+  let+ e = atomic expr and+ () = special "\\" and+ l = label in
   Restrict (e, l)
 
 let extend expr =
   brace
     (let+ ls =
        sep_list ~sep:","
-         (let+ l = name and+ () = special ":" and+ e = expr in
+         (let+ l = label and+ () = special ":" and+ e = expr in
           (l, e))
      and+ () = special "|"
      and+ e' = expr in
      List.fold ls ~init:e' ~f:(fun e' (l, e) -> Extend (l, e, e')))
+
+let tagged expr =
+  let+ t = tag
+  and+ () = skip_many1 (satisfy Char.is_whitespace)
+  and+ e = atomic expr in
+  Tag (t, e)
+
+let match_case expr =
+  let+ t = tag
+  and+ () = skip_many1 (satisfy Char.is_whitespace)
+  and+ x = name
+  and+ () = special "=>"
+  and+ e = expr in
+  ((t, x), e)
+
+let match_ expr =
+  let+ () = keyword "match"
+  and+ e = expr
+  and+ () = keyword "with"
+  and+ c = match_case expr
+  and+ cs =
+    many
+      (let+ () = special "|" and+ c = match_case expr in
+       c)
+  in
+  Match (e, c :: cs)
 
 let intrinsic expr =
   let+ () = skip_while Char.is_whitespace
@@ -235,6 +270,8 @@ let expr =
           proj expr;
           restrict expr;
           extend expr;
+          tagged expr;
+          match_ expr;
           intrinsic expr;
           fun_ expr;
           atomic expr;
@@ -288,7 +325,7 @@ let%expect_test "parse expr" =
   [%expect
     {|
     (Ok
-     (let (x : ({ (bar int) (foo int) | _ })) = ({ (foo int) (bar int) }) in
+     (let (x : ({ (bar int) (foo int) })) = ({ (foo int) (bar int) }) in
       (x . foo)))
     |}];
   pparse
@@ -298,8 +335,8 @@ let%expect_test "parse expr" =
   [%expect
     {|
     (Ok
-     (let f = ((x : ({ (bar int) (foo int) | _ })) => (x . foo)) in
-      (let g = ((x : ({ (bar int) (foo int) | _ })) => (x . bar)) in
+     (let f = ((x : ({ (bar int) (foo int) })) => (x . foo)) in
+      (let g = ((x : ({ (bar int) (foo int) })) => (x . bar)) in
        (let x = ({ (foo 4) (bar 3) }) in (%print_i32 ((- (f x) g) x))))))
     |}];
   pparse
@@ -323,7 +360,7 @@ let%expect_test "parse expr" =
   [%expect
     {|
     (Ok
-     (let (tab : ([] ([] ({ (prod int) (sum int) | _ })))) =
+     (let (tab : ([] ([] ({ (prod int) (sum int) })))) =
       ([ i : 5 ] => ([ j : 5 ] => ({ (sum (+ i j)) (prod (* i j)) }))) in
       (,)))
     |}];
@@ -336,4 +373,13 @@ let%expect_test "parse expr" =
      (r =>
       ({ next = (+ (r . prev) (r . next)) |
        ({ prev = (r . next) | ({ (prev 5) (next 8) }) }) })))
-    |}]
+    |}];
+  pparse "T 10";
+  [%expect
+    {| (Ok (T 10)) |}];
+  pparse "match x with T y => y";
+  [%expect
+    {| (Ok (match x ((T y => y)))) |}];
+  pparse "x => match T x with A a => 0 | B b => 1 | C c => 2";
+  [%expect
+    {| (Ok (x => (match (T x) ((A a => 0) (B b => 1) (C c => 2))))) |}]

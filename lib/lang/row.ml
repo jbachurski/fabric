@@ -4,6 +4,7 @@ open Alg
 module type EntryS = sig
   type 'a t [@@deriving sexp, equal, compare]
 
+  val implicit_in_rest : _ t -> bool
   val components : 'a t -> 'a list
   val polar_map : ('a -> 'b) Polar.t -> 'a t -> 'b t
   val map : f:('a -> 'b) -> 'a t -> 'b t
@@ -37,7 +38,10 @@ end = struct
     (Core.Map.to_alist m
     |> List.map ~f:(fun (l, f) ->
            List [ Atom (Key.to_string l); Entry.pretty a f ]))
-    @ [ Atom "|"; Entry.pretty a rest ]
+    @
+    match Entry.implicit_in_rest rest with
+    | true -> []
+    | false -> [ Atom "|"; Entry.pretty a rest ]
 
   let polar_map ~f { m; rest } =
     { m = Map.map ~f:(Entry.polar_map f) m; rest = Entry.polar_map f rest }
