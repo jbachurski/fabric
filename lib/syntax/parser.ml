@@ -375,11 +375,10 @@ let%expect_test "parse expr" =
        ({ prev = (r . next) | ({ (prev 5) (next 8) }) }) })))
     |}];
   pparse "T 10";
-  [%expect
-    {| (Ok (T 10)) |}];
+  [%expect {| (Ok (T 10)) |}];
   pparse "match x with T y => y";
-  [%expect
-    {| (Ok (match x ((T y => y)))) |}];
+  [%expect {| (Ok (match x ((T y => y)))) |}];
   pparse "x => match T x with A a => 0 | B b => 1 | C c => 2";
-  [%expect
-    {| (Ok (x => (match (T x) ((A a => 0) (B b => 1) (C c => 2))))) |}]
+  [%expect {| (Ok (x => (match (T x) ((A a => 0) (B b => 1) (C c => 2))))) |}];
+  pparse "(p, v, d) => match (p v) with True _ => v | False _ => d";
+  [%expect {| (Ok (x => (match (T x) ((A a => 0) (B b => 1) (C c => 2))))) |}]

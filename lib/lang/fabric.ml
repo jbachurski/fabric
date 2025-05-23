@@ -65,20 +65,20 @@ module Type = struct
   end
 
   module Case = struct
-    type 'a t = Top | Bot | Present of 'a [@@deriving sexp, equal, compare]
+    type 'a t = Top | Bot | Possible of 'a [@@deriving sexp, equal, compare]
 
     let implicit_in_rest = function Bot -> true | _ -> false
-    let components = function Top | Bot -> [] | Present t -> [ t ]
+    let components = function Top | Bot -> [] | Possible t -> [ t ]
 
     let polar_map Polar.{ pos; neg = _ } = function
       | Top -> Top
       | Bot -> Bot
-      | Present a -> Present (pos a)
+      | Possible a -> Possible (pos a)
 
     let map ~f = polar_map { pos = f; neg = f }
 
     let pretty a : _ -> Sexp.t = function
-      | Present t -> a t
+      | Possible t -> a t
       | Bot -> Atom "!"
       | Top -> Atom "?"
 
@@ -86,8 +86,8 @@ module Type = struct
       match (first, second) with
       | Top, x | x, Top -> (x, Top)
       | Bot, x | x, Bot -> (Bot, x)
-      | Present x, Present y ->
-          (Present (latt.meet x y), Present (latt.join x y))
+      | Possible x, Possible y ->
+          (Possible (latt.meet x y), Possible (latt.join x y))
 
     let meet latt x y = fst (combine latt x y)
     and join latt x y = snd (combine latt x y)

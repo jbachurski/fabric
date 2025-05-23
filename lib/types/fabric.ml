@@ -47,26 +47,16 @@ module FabricTypeSystem :
           [%message
             "Incompatible record fields" (lower : Sexp.t) (upper : Sexp.t)]
 
-  let field_combine ~tops ~bots ~unrelated f (fd : 'a Field.t)
-      (fd' : 'a Field.t) : 'a Field.t =
-    match (fd, fd') with
-    | Top, t | t, Top -> tops t
-    | Bot, t | t, Bot -> bots t
-    | Absent, Absent -> Absent
-    | Present t, Present t' -> Present (f t t')
-    | _ -> unrelated
-
-  let field_join f fd fd' =
-    field_combine
-      ~tops:(fun _ -> Top)
-      ~bots:(fun t -> t)
-      ~unrelated:Top f fd fd'
-
-  let field_meet f fd fd' =
-    field_combine
-      ~tops:(fun t -> t)
-      ~bots:(fun _ -> Bot)
-      ~unrelated:Bot f fd fd'
+  let case_decompose sexp ((lower, upper) : 'a Case.t * 'a Case.t) :
+      ('a * 'a) list Or_error.t =
+    match (lower, upper) with
+    | Bot, _ | _, Top -> Ok []
+    | Possible t, Possible t' -> Ok [ (t, t') ]
+    | Top, Possible _ | (Possible _ | Top), Bot ->
+        let lower = Case.pretty sexp lower and upper = Case.pretty sexp upper in
+        error_s
+          [%message
+            "Incompatible record fields" (lower : Sexp.t) (upper : Sexp.t)]
 
   let decompose sexp ((lower : 'a typ), (upper : 'a typ)) :
       ('a * 'a) list Or_error.t =
@@ -83,6 +73,11 @@ module FabricTypeSystem :
         |> List.map ~f:(fun (_, (f, f')) -> field_decompose sexp (f, f'))
         |> Or_error.all
         |> Or_error.map ~f:List.concat
+    | Variant cs, Variant cs' ->
+        Cases.subs cs cs' |> Map.to_alist
+        |> List.map ~f:(fun (_, (f, f')) -> case_decompose sexp (f, f'))
+        |> Or_error.all
+        |> Or_error.map ~f:List.concat
     | _ ->
         let lower = pretty sexp lower and upper = pretty sexp upper in
         error_s
@@ -91,7 +86,7 @@ module FabricTypeSystem :
   let top = Top
   let bot = Bot
 
-  let combine ~tops ~bots ~unrelated f f' f_fd (t : 'a typ) (t' : 'a typ) :
+  let combine ~tops ~bots ~unrelated f f' f_fd f_cs (t : 'a typ) (t' : 'a typ) :
       'a typ =
     match (t, t') with
     | Top, t | t, Top -> tops t
@@ -104,19 +99,20 @@ module FabricTypeSystem :
     (* FIXME: array covariance? *)
     | Array t, Array t' -> Array (f t t')
     | Record fs, Record fs' -> Record (Fields.lift f_fd fs fs')
+    | Variant cs, Variant cs' -> Variant (Cases.lift f_cs cs cs')
     | _ -> unrelated
 
   let join f t t' =
     combine
       ~tops:(fun _ -> Top)
       ~bots:(fun t -> t)
-      ~unrelated:Top f.join f.meet (field_join f.join) t t'
+      ~unrelated:Top f.join f.meet (Field.join f) (Case.join f) t t'
 
   let meet f t t' =
     combine
       ~tops:(fun t -> t)
       ~bots:(fun _ -> Bot)
-      ~unrelated:Bot f.meet f.join (field_meet f.meet) t t'
+      ~unrelated:Bot f.meet f.join (Field.meet f) (Case.meet f) t t'
 
   let%expect_test "Fabric type lattice" =
     let rec meet' (T t) (T t') = T (meet lattice t t')
@@ -312,6 +308,14 @@ let%expect_test "CNF" =
           |> Label.Map.of_alist_exn
           |> if closed then Fields.closed else Fields.open_))
   in
+  let vrt ?(closed = false) kvs =
+    typ
+      Lang.Fabric.Type.(
+        Variant
+          (List.map kvs ~f:(fun (k, v) -> (Tag.of_string k, v))
+          |> Tag.Map.of_alist_exn
+          |> if closed then Cases.closed else Cases.open_))
+  in
   print_s
     [%sexp
       (meet
@@ -328,6 +332,21 @@ let%expect_test "CNF" =
        |> fabric_dnf_to_cnf
         : t)];
   [%expect {| ({ (bar int) (foo int) }) |}];
+  print_s
+    [%sexp
+      (meet
+         (vrt ~closed:true [ ("foo", Possible (typ Int)) ])
+         (vrt [ ("foo", Top); ("bar", Possible (typ Int)) ])
+        : t)];
+  [%expect {| ([ (bar !) (foo int) ]) |}];
+  print_s
+    [%sexp
+      (FabricDNF.meet
+         (vrt ~closed:true [ ("foo", Possible (typ Int)) ] |> fabric_cnf_to_dnf)
+         (vrt [ ("foo", Top); ("bar", Possible (typ Int)) ] |> fabric_cnf_to_dnf)
+       |> fabric_dnf_to_cnf
+        : t)];
+  [%expect {| ([ (bar !) (foo int) ]) |}];
   print_s
     [%sexp
       (meet
@@ -491,7 +510,7 @@ module FabricTyper = struct
              (typ (Record (field (Field.Present e) |> Fields.open_))))
     | Tag (t, e) ->
         let* e = go env e in
-        return (tagty (Tag.of_string t) (Case.Present e))
+        return (tagty (Tag.of_string t) (Case.Possible e))
     | Match (e, cs) ->
         let* e = go env e in
         let* cs =
@@ -508,7 +527,7 @@ module FabricTyper = struct
         let* () =
           e
           <: Map.fold cs ~init:(typ Bot) ~f:(fun ~key:t ~data:(x, _) ->
-                 Alg.join (tagty t (Case.Present x)))
+                 Alg.join (tagty t (Case.Possible x)))
         in
         return
           (Map.fold cs ~init:(typ Bot) ~f:(fun ~key:_ ~data:(_, e) ->
@@ -679,4 +698,8 @@ let%expect_test "" =
   test ("x => match x with A a => 0" |> Syntax.parse_exn);
   [%expect {| ("Sig.pretty s" (([ (A top) ]) -> int)) |}];
   test ("x => match x with A a => 0 | B b => 1 | C c => 2" |> Syntax.parse_exn);
-  [%expect {| ("Sig.pretty s" (top -> int)) |}]
+  [%expect {| ("Sig.pretty s" (([ (A top) (B top) (C top) ]) -> int)) |}];
+  test
+    ("(p, v, d) => match p v with True _ => v | False _ => d"
+   |> Syntax.parse_exn);
+  [%expect {| ("Sig.pretty s" ((($2 -> ([ (False top) (True top) ])) $2 $3) -> (| $2 $3))) |}]
