@@ -1,9 +1,13 @@
 open Core
 open Lang.Sym
+open Lang.Alg
+open Lang.Row
 open Sup
 
 module Entry = struct
   type 'a t = Top | Present of 'a | Bot [@@deriving sexp, equal, compare]
+
+  let components t = match t with Top | Bot -> [] | Present t -> [ t ]
 
   let polar_map Polar.{ pos; neg = _ } = function
     | Top -> Top
@@ -25,76 +29,8 @@ module Entry = struct
   and join latt x y = snd (combine latt x y)
 end
 
-module Row (Key : String_id.S) : sig
-  type rest = [ `Top | `Bot ]
-
-  type 'a t = { m : 'a Entry.t Key.Map.t; rest : rest }
-  [@@deriving sexp, equal, compare]
-
-  val equal : ('a -> 'a -> bool) -> 'a t -> 'a t -> bool
-  val compare : ('a -> 'a -> int) -> 'a t -> 'a t -> int
-  val t_of_sexp : (Sexp.t -> 'a) -> Sexp.t -> 'a t
-  val sexp_of_t : ('a -> Sexp.t) -> 'a t -> Sexp.t
-  val pretty : ('a -> Sexp.t) -> 'a t -> Sexp.t list
-  val components : 'a t -> 'a list
-  val polar_map : f:('a -> 'b) Polar.t -> 'a t -> 'b t
-  val map : f:('a -> 'b) -> 'a t -> 'b t
-  val lift : ('a Entry.t -> 'b Entry.t -> 'c Entry.t) -> 'a t -> 'b t -> 'c t
-  val update : 'a t -> Key.t -> 'a Entry.t -> 'a t
-  val field : 'a t -> Key.t -> 'a Entry.t
-  val subs : 'a t -> 'b t -> ('a Entry.t * 'b Entry.t) Key.Map.t
-end = struct
-  type rest = [ `Top | `Bot ] [@@deriving sexp, equal, compare]
-
-  and 'a t = { m : 'a Entry.t Key.Map.t; rest : [ `Top | `Bot ] }
-  [@@deriving sexp, equal, compare]
-
-  let un = function `Bot -> Entry.Bot | `Top -> Entry.Top
-
-  let nu = function
-    | Entry.Bot -> `Bot
-    | Top -> `Top
-    | Present _ ->
-        failwith "Record cannot be marked as having all fields present"
-
-  let pretty a { m; rest } =
-    let open Sexp in
-    (Core.Map.to_alist m
-    |> List.map ~f:(fun (l, f) ->
-           List [ Atom (Key.to_string l); Entry.pretty a f ]))
-    @
-    match rest with
-    | `Bot -> [ Atom "|"; Atom "!" ]
-    | `Top -> [ Atom "|"; Atom "?" ]
-
-  let polar_map ~f { m; rest } = { m = Map.map ~f:(Entry.polar_map f) m; rest }
-  let map ~f t = polar_map ~f:{ pos = f; neg = f } t
-  let update { m; rest } key data = { m = Map.set m ~key ~data; rest }
-
-  let components { m; rest = _ } =
-    Map.data m
-    |> List.concat_map ~f:(function Top | Bot -> [] | Present t -> [ t ])
-
-  let field { m; rest } key = Map.find m key |> Option.value ~default:(un rest)
-
-  let subs' { m; rest } { m = m'; rest = rest' } =
-    Map.merge m m' ~f:(fun ~key:_ -> function
-      | `Both (t, t') -> Some (t, t')
-      | `Left t -> Some (t, un rest')
-      | `Right t' -> Some (un rest, t'))
-
-    let subs fs fs' =
-      subs' fs fs' |> Map.add_exn ~key:(Key.of_string "*") ~data:(un fs.rest, un fs'.rest)
-
-    let lift f first second =
-      {
-        m = subs' first second |> Map.map ~f:(fun (fd, fd') -> f fd fd');
-        rest = nu (f (un first.rest) (un second.rest));
-      }
-end
-
-module RowLabel = Row (Label)
-module RowTag = Row (Tag)
+module RowLabel = Row (Label) (Entry)
+module RowTag = Row (Tag) (Entry)
 
 type 'a star_typ =
   | Top
@@ -170,7 +106,7 @@ let%expect_test "" =
                   m =
                     Label.Map.of_alist_exn
                       [ (Label.of_string "x", Entry.Present (T Sized)) ];
-                  rest = `Top;
+                  rest = Top;
                 });
          upper =
            T
@@ -179,7 +115,7 @@ let%expect_test "" =
                   m =
                     Label.Map.of_alist_exn
                       [ (Label.of_string "x", Entry.Present (T Sized)) ];
-                  rest = `Top;
+                  rest = Top;
                 });
          elem = T Float;
        })
@@ -195,9 +131,9 @@ let%expect_test "" =
                         (Label.of_string "x", Entry.Present (T Sized));
                         (Label.of_string "y", Entry.Present (T Sized));
                       ];
-                  rest = `Top;
+                  rest = Top;
                 });
-         upper = T (Product { m = Label.Map.empty; rest = `Top });
+         upper = T (Product { m = Label.Map.empty; rest = Top });
          elem = T Float;
        });
   [%expect
@@ -488,19 +424,19 @@ module StarTyper = struct
         return a.upper
     | Record r ->
         let* m = cons Label.Map.of_alist_exn r in
-        return_typ (Record { m; rest = `Top })
+        return_typ (Record { m; rest = Top })
     | Product r ->
         let* m = cons Label.Map.of_alist_exn r in
-        return_typ (Product { m; rest = `Top })
+        return_typ (Product { m; rest = Top })
     | Concat r ->
         let* m = cons Tag.Map.of_alist_exn r in
-        return_typ (Concat { m; rest = `Top })
+        return_typ (Concat { m; rest = Top })
     | Project (e, l) ->
         let open Label.Map in
         let$ t = () in
         let* e = go env e in
         let* () =
-          e <: typ (Record { m = singleton l (Entry.Present t); rest = `Top })
+          e <: typ (Record { m = singleton l (Entry.Present t); rest = Top })
         in
         return t
     | Dimension (e, l) ->
@@ -508,7 +444,7 @@ module StarTyper = struct
         let$ t = () in
         let* e = go env e in
         let* () =
-          e <: typ (Product { m = singleton l (Entry.Present t); rest = `Top })
+          e <: typ (Product { m = singleton l (Entry.Present t); rest = Top })
         in
         return t
     | Component (e, l) ->
@@ -516,7 +452,7 @@ module StarTyper = struct
         let$ t = () in
         let* e = go env e in
         let* () =
-          e <: typ (Concat { m = singleton l (Entry.Present t); rest = `Top })
+          e <: typ (Concat { m = singleton l (Entry.Present t); rest = Top })
         in
         return t
     | Tag _ -> failwith "Tag"

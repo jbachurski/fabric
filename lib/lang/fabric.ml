@@ -110,7 +110,8 @@ module Type = struct
         | `Right t' -> Some (un rest, t'))
 
     let subs fs fs' =
-      subs' fs fs' |> Map.add_exn ~key:(Label.of_string "*") ~data:(un fs.rest, un fs'.rest)
+      subs' fs fs'
+      |> Map.add_exn ~key:(Label.of_string "*") ~data:(un fs.rest, un fs'.rest)
 
     let lift f first second =
       {
@@ -198,6 +199,8 @@ module Expr = struct
     | Proj of t * string
     | Restrict of t * string
     | Extend of string * t * t
+    | Tag of string * t
+    | Match of t * (string * t) list
     | Intrinsic of string * t
     | Op of t * string * t
     | Closure of int * (string * Type.t) list * Type.t
@@ -249,6 +252,17 @@ module Expr = struct
           [
             Atom "{"; Atom f; Atom "="; pretty e; Atom "|"; pretty e'; Atom "}";
           ]
+    | Tag (t, e) -> List [ Atom t; pretty e ]
+    | Match (e, cs) ->
+        List
+          [
+            Atom "match";
+            pretty e;
+            List
+              (List.map
+                 ~f:(fun (t, e) -> List [ Atom t; Atom "=>"; pretty e ])
+                 cs);
+          ]
     | Intrinsic (f, e) -> List [ Atom ("%" ^ f); pretty e ]
     | Op (e, "", e') -> List [ pretty e; pretty e' ]
     | Op (e, o, e') -> List [ Atom o; pretty e; pretty e' ]
@@ -280,6 +294,9 @@ module Expr = struct
         | Proj (e, l) -> Proj (go0 e, l)
         | Restrict (e, l) -> Restrict (go0 e, l)
         | Extend (f, e, e') -> Extend (f, go0 e, go0 e')
+        | Tag (t, e) -> Tag (t, go0 e)
+        | Match (e, cs) ->
+            Match (go0 e, List.map ~f:(fun (t, e) -> (t, go0 e)) cs)
         | Intrinsic (f, e) -> Intrinsic (f, go0 e)
         | Op (e, o, e') -> Op (go0 e, o, go0 e')
         | Closure (k, xs, t) -> Closure (k, xs, t))
@@ -288,25 +305,26 @@ module Expr = struct
 
   let rec var_reduce z ( !. ) ( <| ) ( <|> ) (e : t) =
     let ( !! ) = var_reduce z ( !. ) ( <| ) ( <|> ) in
+    let all = List.fold_left ~init:z ~f:( <|> ) in
     match e with
     | Var (x, t) -> !.(x, t)
     | Lit _ -> z
     | Unify (_, _, e) -> !!e
     | Let (x, e, e') -> !!e <|> (!!e' <| x)
     | Fun (x, e) -> !!e <| x
-    | Tuple es -> List.map ~f:( !! ) es |> List.fold_left ~init:z ~f:( <|> )
+    | Tuple es -> List.map ~f:( !! ) es |> all
     | Array (i, e, e') -> !!e <|> !!e' <| Atom (i, T Int)
     | Idx (e, e') -> !!e <|> !!e'
     | Shape e -> !!e
-    | Cons fs ->
-        List.map fs ~f:(fun (_, e) -> !!e) |> List.fold_left ~init:z ~f:( <|> )
+    | Cons fs -> List.map fs ~f:(fun (_, e) -> !!e) |> all
     | Proj (e, _) -> !!e
     | Restrict (e, _) -> !!e
     | Extend (_f, e, e') -> !!e <|> !!e'
+    | Tag (_, e) -> !!e
+    | Match (e, cs) -> !!e <|> (List.map cs ~f:(fun (_, e) -> !!e) |> all)
     | Intrinsic (_, e) -> !!e
     | Op (e, _o, e') -> !!e <|> !!e'
-    | Closure (_k, xs, _t) ->
-        List.map ~f:( !. ) xs |> List.fold_left ~init:z ~f:( <|> )
+    | Closure (_k, xs, _t) -> List.map ~f:( !. ) xs |> all
 
   let rec type_onto_pattern (t : Type.t) (p : pattern) : pattern =
     match (t, p) with
@@ -320,6 +338,7 @@ module Expr = struct
     | Atom (_, t) -> t
     | List ps -> T (Tuple (List.map ~f:type_pattern ps))
 
+  (* This does not really do what I would want it to, but it is some approximation of the type *)
   let rec type_expr = function
     | Var (_, t) -> t
     | Lit _ -> T Int
@@ -339,6 +358,8 @@ module Expr = struct
     | Proj (e, l) -> Type.unwrap_record_field (type_expr e) (Label.of_string l)
     | Restrict (_e, _l) -> T Top
     | Extend (_f, _e, _e') -> T Top
+    | Tag (_, _) -> T Top
+    | Match (_, _) -> T Top
     | Intrinsic ("print", _) -> T Type.unit
     | Intrinsic ("print_i32", _) -> T Type.unit
     | Intrinsic _ -> T Top

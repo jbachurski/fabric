@@ -1,4 +1,5 @@
 open Core
+open Lang.Alg
 module Type_var = Lang.Sym.Type_var
 module Polar = Lang.Polar
 
@@ -11,7 +12,6 @@ let next_type_var =
     Type_var.of_string ("$" ^ string_of_int !cnt)
 
 type ('a, 'args) massage = ('a -> Sexp.t) -> 'args -> ('a * 'a) list Or_error.t
-type 'a lattice = { join : 'a -> 'a -> 'a; meet : 'a -> 'a -> 'a }
 
 module type TypeSystem = sig
   type 'a typ [@@deriving sexp, equal, compare]

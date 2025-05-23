@@ -151,6 +151,8 @@ let assemble_expr (module Ctx : Context) ~functions =
                 ];
               curr_value;
             ]
+    | Tag (_, _) -> failwith "unimplemented: Tag"
+    | Match (_, _) -> failwith "unimplemented: Match"
     | Array (i_, n_, e_) ->
         let n = local Type.int32 in
         let i = local (Type.of_heap_type int_t.struct_type) in

@@ -1,5 +1,6 @@
 open Core
 open Lang.Sym
+open Lang.Alg
 open Sup
 
 type fabric_arrow = { records : Lang.Fabric.Type.dir Label.Map.t }
@@ -484,6 +485,8 @@ module FabricTyper = struct
           (Alg.meet
              (apply (field_drop f) e')
              (typ (Record (field (Field.Present e) |> Fields.open_))))
+    | Tag _ -> failwith "TypeExpr.go: Tag"
+    | Match _ -> failwith "TypeExpr.go: Match"
     | Op (e, "", e') ->
         let$ res = () in
         let* e = go env e and* e' = go env e' in
@@ -642,7 +645,6 @@ let%expect_test "" =
         ((| $10 $13 $5 $8 $9) ->
          ((| $10 $13 $5 $8 $9) -> (& $11 $13 $5 ({ (add $7) | ? }))))))))
     |}];
-  test
-    ("x => y => (x {quack: y}).noise" |> Syntax.parse_exn);
+  test ("x => y => (x {quack: y}).noise" |> Syntax.parse_exn);
   [%expect
-    {| ("Sig.pretty s" ((({ (quack $2) }) -> ({ (noise $3) | ? })) -> ($2 -> $3))) |}];
+    {| ("Sig.pretty s" ((({ (quack $2) }) -> ({ (noise $3) | ? })) -> ($2 -> $3))) |}]
