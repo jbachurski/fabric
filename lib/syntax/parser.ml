@@ -76,7 +76,7 @@ let record_type type_ =
      (Label.of_string l, Type.Field.Present e))
   |> brace
   |> map ~f:(fun fs ->
-         Type.T (Record (Label.Map.of_alist_exn fs |> Type.Fields.closed)))
+         Type.T (Record (Label.Map.of_alist_exn fs |> Type.Fields.open_)))
 
 let array_type type_ =
   let+ () = special "[]" and+ t = type_ in
@@ -151,8 +151,17 @@ let unify expr =
   Unify (x, x', e)
 
 let op =
-  take_while (fun c -> Char.(c = '+' || c = '-' || c = '*' || c = '/'))
-  >>| String.strip
+  choice
+    [
+      string "==";
+      string "!=";
+      string ">=";
+      string ">";
+      string "<=";
+      string "<";
+      string ";";
+      take_while (fun c -> Char.(c = '+' || c = '-' || c = '*' || c = '/'));
+    ]
 
 let ops expr =
   let+ e = expr
@@ -243,6 +252,7 @@ let match_ expr =
   let+ () = keyword "match"
   and+ e = expr
   and+ () = keyword "with"
+  and+ () = option () (special "|")
   and+ c = match_case expr
   and+ cs =
     many
@@ -325,7 +335,7 @@ let%expect_test "parse expr" =
   [%expect
     {|
     (Ok
-     (let (x : ({ (bar int) (foo int) })) = ({ (foo int) (bar int) }) in
+     (let (x : ({ (bar int) (foo int) | ? })) = ({ (foo int) (bar int) }) in
       (x . foo)))
     |}];
   pparse
@@ -335,8 +345,8 @@ let%expect_test "parse expr" =
   [%expect
     {|
     (Ok
-     (let f = ((x : ({ (bar int) (foo int) })) => (x . foo)) in
-      (let g = ((x : ({ (bar int) (foo int) })) => (x . bar)) in
+     (let f = ((x : ({ (bar int) (foo int) | ? })) => (x . foo)) in
+      (let g = ((x : ({ (bar int) (foo int) | ? })) => (x . bar)) in
        (let x = ({ (foo 4) (bar 3) }) in (%print_i32 ((- (f x) g) x))))))
     |}];
   pparse
@@ -360,7 +370,7 @@ let%expect_test "parse expr" =
   [%expect
     {|
     (Ok
-     (let (tab : ([] ([] ({ (prod int) (sum int) })))) =
+     (let (tab : ([] ([] ({ (prod int) (sum int) | ? })))) =
       ([ i : 5 ] => ([ j : 5 ] => ({ (sum (+ i j)) (prod (* i j)) }))) in
       (,)))
     |}];
@@ -381,4 +391,33 @@ let%expect_test "parse expr" =
   pparse "x => match T x with A a => 0 | B b => 1 | C c => 2";
   [%expect {| (Ok (x => (match (T x) ((A a => 0) (B b => 1) (C c => 2))))) |}];
   pparse "(p, v, d) => match (p v) with True _ => v | False _ => d";
-  [%expect {| (Ok (x => (match (T x) ((A a => 0) (B b => 1) (C c => 2))))) |}]
+  [%expect {| (Ok ((p v d) => (match (p v) ((True _ => v) (False _ => d))))) |}];
+  pparse
+    "let stutter = xs => match xs with \n\
+     | Nil _ => Nil () \n\
+     | Cons c => Cons { \n\
+     head: c.head, \n\
+     tail: Cons { head: c.head, tail: stutter c.tail }} \n\
+     in stutter";
+  [%expect
+    {|
+    (Ok
+     (let stutter =
+      (xs =>
+       (match xs
+        ((Nil _ => (Nil (,)))
+         (Cons c =>
+          (Cons
+           ({ (head (c . head))
+            (tail (Cons ({ (head (c . head)) (tail (stutter (c . tail))) }))) }))))))
+      in stutter))
+    |}];
+  pparse "x == 0";
+  [%expect {| (Ok (== x 0)) |}];
+  pparse "(x == 0); (x != 0); (x > 0); (x >= 0); (x < 0); (x <= 0)";
+  [%expect
+    {|
+    (Ok
+     (";" (";" (";" (";" (";" (== x 0) (!= x 0)) (> x 0)) (>= x 0)) (< x 0))
+      (<= x 0)))
+    |}]

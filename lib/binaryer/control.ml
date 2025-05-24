@@ -13,4 +13,5 @@ struct
   let if_ cond on_true on_false = C.Control.if_ M.me cond on_true on_false
   let loop ?in_ body = C.Control.loop M.me in_ body
   let break ~name ?cond ?value () = C.Control.break M.me name cond value
+  let unreachable () = C.Expression.unreachable M.me
 end

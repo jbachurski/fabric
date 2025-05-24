@@ -51,9 +51,7 @@ let%expect_test "propagate" =
   [%expect
     {|
     (let (x : int) = 0 in
-     (let (x : int) = (x : int) in
-      (let (x : int) = (x : int) in
-       (let (x : int) = (x : int) in (let (x : int) = (x : int) in (x : int))))))
+     (let x = x in (let x = x in (let x = x in (let x = x in x)))))
     |}]
 
 let%expect_test "strip & propagate" =
@@ -80,15 +78,17 @@ let%expect_test "strip & propagate" =
      (let (y : int) = 4 in (+ (* (x : int) (x : int)) (* (x : int) (x : int)))))
     |}];
   test
-    "let x: int = 0 in let x: int = x in let x = x in let x = x in let x: int \
-     = x in x";
+    "let x0: int = 0 in let x1: int = x0 in let x2 = x1 in let x3 = x2 in let \
+     x4: int = x3 in x4";
   [%expect
     {|
-    (let x = 0 in (let x = x in (let x = x in (let x = x in (let x = x in x)))))
-    (let (x : int) = 0 in
-     (let (x : int) = (x : int) in
-      (let (x : int) = (x : int) in
-       (let (x : int) = (x : int) in (let (x : int) = (x : int) in (x : int))))))
+    (let x0 = 0 in
+     (let x1 = x0 in (let x2 = x1 in (let x3 = x2 in (let x4 = x3 in x4)))))
+    (let (x0 : int) = 0 in
+     (let (x1 : int) = (x0 : int) in
+      (let (x2 : int) = (x1 : int) in
+       (let (x3 : int) = (x2 : int) in
+        (let (x4 : int) = (x3 : int) in (x4 : int))))))
     |}];
   test
     "let ((x,), (a, b, c)) = ((1,), (2, 3, 4)) in %print_i32 (x + (a * b * c))";

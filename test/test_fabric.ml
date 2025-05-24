@@ -4,11 +4,14 @@ open Fabric
 let%expect_test "compile" =
   let test program =
     print_s (Syntax.parse_exn program |> Lang.Fabric.Expr.pretty);
-    let (module Ctx) = Binaryer.context_of_module (compile program) in
-    let open Ctx in
-    let valid = validate () in
-    print_s [%message (valid : bool)];
-    if not valid then print () else interpret ()
+    match Types.Fabric.check (Syntax.parse_exn program) with
+    | Ok () ->
+        let (module Ctx) = Binaryer.context_of_module (compile program) in
+        let open Ctx in
+        let valid = validate () in
+        print_s [%message (valid : bool)];
+        if not valid then print () else interpret ()
+    | Error type_error -> print_s [%message (type_error : Error.t)]
   in
   let test program =
     try test program
@@ -110,8 +113,8 @@ let%expect_test "compile" =
      let x = {baz: 0, bar: 3, foo: 4, boo: 1} in %print_i32 ((f x) - (g x))";
   [%expect
     {|
-    (let f = ((x : ({ (foo int) })) => (x . foo)) in
-     (let g = ((x : ({ (bar int) })) => (x . bar)) in
+    (let f = ((x : ({ (foo int) | ? })) => (x . foo)) in
+     (let g = ((x : ({ (bar int) | ? })) => (x . bar)) in
       (let x = ({ (baz 0) (bar 3) (foo 4) (boo 1) }) in
        (%print_i32 (- (f x) (g x))))))
     (valid true)
@@ -125,7 +128,7 @@ let%expect_test "compile" =
      %print_i32 (fun 2 3)";
   [%expect
     {|
-    (let (tab : ([] ([] ({ (prod int) (sum int) })))) =
+    (let (tab : ([] ([] ({ (prod int) (sum int) | ? })))) =
      ([ i : 5 ] => ([ j : 5 ] => ({ (sum (+ i j)) (prod (* i j)) }))) in
      (let fun =
       ((i : int) =>
@@ -134,4 +137,72 @@ let%expect_test "compile" =
       in (%print_i32 ((fun 2) 3))))
     (valid true)
     12 : i32
+    |}];
+  test "let y = 5 in match T y with T x => %print_i32 x";
+  [%expect
+    {|
+    (let y = 5 in (match (T y) ((T x => (%print_i32 x)))))
+    (valid true)
+    5 : i32
+    |}];
+  test
+    "let abs = x => match x > 0 with True _ => x | False _ => 0-x in \
+     %print_i32 (abs 5); %print_i32 (abs (-4))";
+  [%expect
+    {|
+    (let abs = (x => (match (> x 0) ((True _ => x) (False _ => (- 0 x))))) in
+     (";" (%print_i32 (abs 5)) (%print_i32 (abs -4))))
+    (valid true)
+    5 : i32
+    4 : i32
+    |}];
+  test
+    "let y = f => let z = x => f (v => x x v) in z z in\n\
+     let fib = y (fib => n => \n\
+     match n > 1 with \n\
+     | True _ => (fib (n - 1)) + (fib (n - 2)) \n\
+     | False _ => n) in \n\
+     %print_i32 (fib 8)";
+  [%expect
+    {|
+    (let y = (f => (let z = (x => (f (v => ((x x) v)))) in (z z))) in
+     (let fib =
+      (y
+       (fib =>
+        (n =>
+         (match (> n 1)
+          ((True _ => (+ (fib (- n 1)) (fib (- n 2)))) (False _ => n))))))
+      in (%print_i32 (fib 8))))
+    (valid true)
+    21 : i32
+    |}];
+  test
+    "let y = f => let z = x => f (v => x x v) in z z in\n\
+     let print = y (print => xs => \n\
+     match xs with \n\
+     | Cons c => (%print_i32 (c.head)); (print (c.tail))  \n\
+     | Nil _ => ()) in \n\
+     print (Cons { head: 1, tail: Cons { head: 2, tail: Cons { head: 3, tail: \
+     Nil () }}})";
+  [%expect
+    {|
+    (let y = (f => (let z = (x => (f (v => ((x x) v)))) in (z z))) in
+     (let print =
+      (y
+       (print =>
+        (xs =>
+         (match xs
+          ((Cons c => (";" (%print_i32 (c . head)) (print (c . tail))))
+           (Nil _ => (,)))))))
+      in
+      (print
+       (Cons
+        ({ (head 1)
+         (tail
+          (Cons ({ (head 2) (tail (Cons ({ (head 3) (tail (Nil (,))) }))) })))
+         })))))
+    (valid true)
+    1 : i32
+    2 : i32
+    3 : i32
     |}]

@@ -53,6 +53,7 @@ module type Context = sig
     val if_ : expr -> expr -> expr option -> expr
     val loop : ?in_:string -> expr -> expr
     val break : name:string -> ?cond:expr -> ?value:expr -> unit -> expr
+    val unreachable : unit -> expr
   end
 
   module Function : sig

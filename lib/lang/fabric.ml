@@ -275,7 +275,7 @@ module Expr = struct
         | Var (x, t) -> Var (x, t)
         | Lit n -> Lit n
         | Unify (x, x', e) -> Unify (x, x', go0 e)
-        | Let (x, e, e') -> Let (x, go0 e, go x e')
+        | Let (x, e, e') -> Let (x, go x e, go x e')
         | Fun (x, e) -> Fun (x, go x e)
         | Tuple es -> Tuple (List.map es ~f:go0)
         | Array (i, e, e') -> Array (i, go0 e, go (Atom (i, T Int)) e')
@@ -287,7 +287,11 @@ module Expr = struct
         | Extend (f, e, e') -> Extend (f, go0 e, go0 e')
         | Tag (t, e) -> Tag (t, go0 e)
         | Match (e, cs) ->
-            Match (go0 e, List.map ~f:(fun (t, e) -> (t, go0 e)) cs)
+            Match
+              ( go0 e,
+                List.map
+                  ~f:(fun ((t, x), e) -> ((t, x), go (Atom (x, T Top)) e))
+                  cs )
         | Intrinsic (f, e) -> Intrinsic (f, go0 e)
         | Op (e, o, e') -> Op (go0 e, o, go0 e')
         | Closure (k, xs, t) -> Closure (k, xs, t))
@@ -312,7 +316,9 @@ module Expr = struct
     | Restrict (e, _) -> !!e
     | Extend (_f, e, e') -> !!e <|> !!e'
     | Tag (_, e) -> !!e
-    | Match (e, cs) -> !!e <|> (List.map cs ~f:(fun (_, e) -> !!e) |> all)
+    | Match (e, cs) ->
+        !!e
+        <|> (List.map cs ~f:(fun ((_, x), e) -> !!e <| Atom (x, T Top)) |> all)
     | Intrinsic (_, e) -> !!e
     | Op (e, _o, e') -> !!e <|> !!e'
     | Closure (_k, xs, _t) -> List.map ~f:( !. ) xs |> all

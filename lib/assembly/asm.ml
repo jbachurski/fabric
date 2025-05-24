@@ -67,10 +67,26 @@ let assemble_expr (module Ctx : Context) ~functions =
         ("values", field (record_values_t.array_type |> of_heap_type));
       ]
   in
+  let variant_t =
+    let open Type in
+    Struct.t [ ("tag", field int32); ("value", field anyref) ]
+  in
   let closure_fun_t = closure_fun_t (module Ctx) in
   let closure_t = closure_t (module Ctx) in
   let wrap_int e = Struct.(make int_t [ ("value", e) ]) in
   let unwrap_int e = Cell.( ! ) Struct.(cell int_t e "value") in
+  let tagged t e =
+    Struct.make variant_t [ ("tag", Const.i32' (String.hash t)); ("value", e) ]
+  in
+  let tupled es =
+    let t = tuple_t (List.length es) in
+    Struct.make t (List.mapi es ~f:(fun i e -> (string_of_int i, e)))
+  in
+  let wrap_bool e =
+    Control.if_ e
+      (tagged "True" (tupled []))
+      (Some (tagged "False" (tupled [])))
+  in
   let gensym =
     let cnt = ref 0 in
     fun prefix ->
@@ -105,9 +121,7 @@ let assemble_expr (module Ctx : Context) ~functions =
         in
         Control.block
           ([ Cell.(v := go env e) ] @ assigns @ [ go (env_extras @ env) e' ])
-    | Tuple es ->
-        let t = tuple_t (List.length es) in
-        Struct.make t (List.mapi es ~f:(fun i e -> (string_of_int i, go env e)))
+    | Tuple es -> tupled (List.map ~f:(go env) es)
     | Cons fs ->
         Struct.make record_t
           [
@@ -151,8 +165,30 @@ let assemble_expr (module Ctx : Context) ~functions =
                 ];
               curr_value;
             ]
-    | Tag (_, _) -> failwith "unimplemented: Tag"
-    | Match (_, _) -> failwith "unimplemented: Match"
+    | Tag (t, e) -> tagged t (go env e)
+    | Match (e, cs) ->
+        let ee = local (Type.of_heap_type variant_t.struct_type) in
+        let tt = local Type.int32 in
+        let vv = local Type.anyref in
+        let rec cases cs =
+          match cs with
+          | ((t, x), e) :: cs ->
+              Control.if_
+                Operator.I32.(Const.i32' (String.hash t) = Cell.( ! ) tt)
+                (go ((x, vv) :: env) e)
+                (Some (cases cs))
+          | [] -> Control.unreachable ()
+        in
+        Control.block
+          Cell.
+            [
+              ee :=
+                C.Expression.ref_cast me (go env e)
+                  (variant_t.struct_type |> Type.of_heap_type);
+              tt := Struct.cell variant_t !ee "tag" |> ( ! );
+              vv := Struct.cell variant_t !ee "value" |> ( ! );
+              cases cs;
+            ]
     | Array (i_, n_, e_) ->
         let n = local Type.int32 in
         let i = local (Type.of_heap_type int_t.struct_type) in
@@ -184,17 +220,33 @@ let assemble_expr (module Ctx : Context) ~functions =
           (Struct.cell closure_t a "fun" |> Cell.( ! ))
           [ a'; Struct.cell closure_t a "upvars" |> Cell.( ! ) ]
           Type.anyref
-    | Op (e, o, e') ->
+    | Op (e, (("+" | "-" | "*" | "/") as o), e') ->
         let op =
           match o with
           | "+" -> C.Expression.Operator.I32.add
           | "-" -> C.Expression.Operator.I32.sub
           | "*" -> C.Expression.Operator.I32.mul
           | "/" -> C.Expression.Operator.I32.div_s
-          | _ -> raise_s [%message "no op for" (o : string)]
+          | _ -> failwith "unreachable"
         in
         Operator.binary op (go env e |> unwrap_int) (go env e' |> unwrap_int)
         |> wrap_int
+    | Op (e, (("=" | "!=" | ">" | ">=" | "<" | "<=") as o), e') ->
+        let op =
+          match o with
+          | "=" -> C.Expression.Operator.I32.eq
+          | "!=" -> C.Expression.Operator.I32.ne
+          | ">" -> C.Expression.Operator.I32.gt
+          | ">=" -> C.Expression.Operator.I32.ge
+          | "<" -> C.Expression.Operator.I32.lt
+          | "<=" -> C.Expression.Operator.I32.le
+          | _ -> failwith "unreachable"
+        in
+        Operator.binary op (go env e |> unwrap_int) (go env e' |> unwrap_int)
+        |> wrap_bool
+    | Op (e, ";", e') ->
+        Control.block [ C.Expression.drop me (go env e); go env e' ]
+    | Op (_, o, _) -> raise_s [%message "no op for" (o : string)]
     | Closure (k, fv, _) ->
         let { upvars_t; name } = List.nth_exn functions k in
         Struct.make closure_t

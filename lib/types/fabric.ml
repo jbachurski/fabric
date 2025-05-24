@@ -56,7 +56,7 @@ module FabricTypeSystem :
         let lower = Case.pretty sexp lower and upper = Case.pretty sexp upper in
         error_s
           [%message
-            "Incompatible record fields" (lower : Sexp.t) (upper : Sexp.t)]
+            "Incompatible variant cases" (lower : Sexp.t) (upper : Sexp.t)]
 
   let decompose sexp ((lower : 'a typ), (upper : 'a typ)) :
       ('a * 'a) list Or_error.t =
@@ -441,7 +441,7 @@ module FabricTyper = struct
 
   let push xs (env : _ Var.Map.t) =
     List.fold xs ~init:env ~f:(fun env (x, x_) ->
-        Map.add_exn ~key:x ~data:x_ env)
+        Map.update env x ~f:(Fn.const x_))
 
   let rec go (env : Alg.t Var.Map.t) : t -> Alg.t Constrained.t =
     let open Constrained in
@@ -451,6 +451,11 @@ module FabricTyper = struct
     in
     let var x = Map.find_exn env (Var.of_string x) in
     let tagty t c = typ (Variant (Cases.closed (Tag.Map.singleton t c))) in
+    let bool =
+      Alg.join
+        (tagty (Tag.of_string "True") (Possible (typ (Tuple []))))
+        (tagty (Tag.of_string "False") (Possible (typ (Tuple []))))
+    in
     function
     | Var (x, _) -> return (var x)
     | Lit _ -> return_typ Int
@@ -542,25 +547,43 @@ module FabricTyper = struct
         let* e' = go env e' in
         let* () = e <: typ Int and* () = e' <: typ Int in
         return_typ Int
-    | Array _ -> failwith "TypeExpr.go: Array"
-    | Idx _ -> failwith "TypeExpr.go: Idx"
-    | Shape _ -> failwith "TypeExpr.go: Shape"
+    | Op (e, ("=" | "!=" | ">" | ">=" | "<" | "<="), e') ->
+        let* e = go env e in
+        let* e' = go env e' in
+        let* () = e <: typ Int and* () = e' <: typ Int in
+        return bool
+    | Op (e, ";", e') ->
+        let* e = go env e in
+        let* e' = go env e' in
+        let* () = e <: typ (Tuple []) in
+        return e'
+    | Intrinsic ("print_i32", e) ->
+        let* e = go env e in
+        let* () = e <: typ Int in
+        return_typ (Tuple [])
+    | Array _ -> return_typ Bot
+    | Idx _ -> return_typ Bot
+    | Shape _ -> return_typ Bot
     | Intrinsic _ -> failwith "TypeExpr.go: Intrinsic"
     | Closure _ -> failwith "TypeExpr.go: Closure"
     | Op (_, o, _) -> failwith ("TypeExpr.go: Op " ^ o)
 end
 
+let infer e =
+  let open FabricTyper in
+  let t, c = Constrained.unwrap (go Var.Map.empty e) in
+  let c = Constraint.simp c in
+  (* print_s [%message (c : Type.Alg.t Constraint.t)]; *)
+  Result.map (Solver.run c) ~f:(fun bounds -> Sig.t bounds (Type.dnf t))
+
+let check e = infer e |> Result.map ~f:ignore
+
 let%expect_test "" =
   let test e =
     let open FabricTyper in
     curr_type_var := 0;
-    let t, c = Constrained.unwrap (go Var.Map.empty e) in
-    let c = Constraint.simp c in
-    (* print_s [%message (c : Type.Alg.t Constraint.t)]; *)
-    match Solver.run c with
-    | Ok bounds ->
-        let s = Sig.t bounds (Type.dnf t) in
-        print_s [%message (Sig.pretty s : Sexp.t)]
+    match infer e with
+    | Ok s -> print_s [%message (Sig.pretty s : Sexp.t)]
     | Error err -> print_s [%message (err : Error.t)]
   in
   test (Proj (Cons [ ("foo", Lit 5); ("bar", Tuple [ Lit 1; Lit 2 ]) ], "foo"));
@@ -702,4 +725,123 @@ let%expect_test "" =
   test
     ("(p, v, d) => match p v with True _ => v | False _ => d"
    |> Syntax.parse_exn);
-  [%expect {| ("Sig.pretty s" ((($2 -> ([ (False top) (True top) ])) $2 $3) -> (| $2 $3))) |}]
+  [%expect
+    {| ("Sig.pretty s" ((($2 -> ([ (False top) (True top) ])) $2 $3) -> (| $2 $3))) |}];
+  let snoc_def =
+    "let snoc = x => xs => match xs with  \n\
+     | Cons c => Cons { head: c.head, tail: snoc x c.tail }  \n\
+     | Nil _ => Cons { head: x, tail: Nil () } in "
+  in
+  test (snoc_def ^ "snoc" |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     (($2 ->
+       ($3 -> ([ (Cons ({ (head (| $2 $5)) (tail (| ([ (Nil ()) ]) $6)) })) ])))
+      where
+      (($3 <= ([ (Cons $4) (Nil top) ]))
+       ($4 <= ({ (head $5) (tail (& $3 ([ (Cons $4) (Nil top) ]))) | ? }))
+       (([ (Cons ({ (head (| $2 $5)) (tail (| ([ (Nil ()) ]) $6)) })) ]) <= $6))))
+    |}];
+  let stutter_def =
+    "let stutter = xs => match xs with \n\
+     | Nil _ => Nil () \n\
+     | Cons c => Cons { \n\
+     head: c.head, \n\
+     tail: Cons { head: c.head, tail: stutter c.tail }} in "
+  in
+  let pairwise_def =
+    "let pairwise = xs => match xs with \n\
+     | Nil _ => Nil () \n\
+     | Cons a => (match a.tail with Cons b => \n\
+    \        Cons { head: (a.head, b.head), tail: pairwise b.tail }) in "
+  in
+  (* Uninteresting, as they are not simplified properly *)
+  test (stutter_def ^ "stutter" |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     (($2 ->
+       ([ (Cons ({ (head $4) (tail ([ (Cons ({ (head $5) (tail $6) })) ])) }))
+        (Nil ()) ]))
+      where
+      (($2 <= ([ (Cons $3) (Nil top) ]))
+       ($3 <= ({ (head (& $4 $5)) (tail (& $2 ([ (Cons $3) (Nil top) ]))) | ? }))
+       (([ (Cons ({ (head $4) (tail ([ (Cons ({ (head $5) (tail $6) })) ])) }))
+         (Nil ()) ])
+        <= $6))))
+    |}];
+  test (pairwise_def ^ "pairwise" |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     (($2 -> ([ (Cons ({ (head ($6 $7)) (tail $8) })) (Nil ()) ])) where
+      (($2 <= ([ (Cons $3) (Nil top) ]))
+       ($3 <=
+        ({ (head $6)
+         (tail
+          ([ (Cons ({ (head $7) (tail (& $2 ([ (Cons $3) (Nil top) ]))) | ? }))
+           ]))
+         | ? }))
+       (([ (Cons ({ (head ($6 $7)) (tail $8) })) (Nil ()) ]) <= $8))))
+    |}];
+  (* Interesting: match on zero or two elements *)
+  test
+    (stutter_def
+     ^ "xs => match stutter xs with Cons c => (match c.tail with Cons c => c) \
+        | Nil _ => Nil ()"
+    |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     ((([ (Cons $3) (Nil top) ]) -> top) where
+      (($3 <= ({ (head (& $4 $5)) (tail ([ (Cons $3) (Nil top) ])) | ? }))
+       (([ (Cons ({ (head $4) (tail ([ (Cons ({ (head $5) (tail $6) })) ])) }))
+         (Nil ()) ])
+        <= $6))))
+    |}];
+  (* Interesting: match on even number of elements succeeds *)
+  test
+    (stutter_def ^ pairwise_def ^ "xs => pairwise (stutter xs)"
+    |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     ((([ (Cons $3) (Nil top) ]) ->
+       ([ (Cons ({ (head ((| $14 $4) (| $15 $5))) (tail $16) })) (Nil ()) ]))
+      where
+      ((([ (Cons ({ (head ((| $14 $4) (| $15 $5))) (tail $16) })) (Nil ()) ]) <=
+        $16)
+       ($3 <=
+        ({ (head (& $14 $15 $4 $5)) (tail ([ (Cons $3) (Nil top) ])) | ? })))))
+    |}];
+  (* Interesting: match on odd number of elements fails *)
+  test
+    (stutter_def ^ pairwise_def
+     ^ "xs => pairwise (Cons { head: 0, tail: stutter xs })"
+    |> Syntax.parse_exn);
+  [%expect
+    {|
+    (err
+     (("Incompatible variant cases" (lower ()) (upper !))
+      ("Incompatible variant cases" (lower ()) (upper !))))
+    |}];
+  (* Interesting: match on odd number of elements fails *)
+  test (pairwise_def ^ "xs => pairwise xs" |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     ((([ (Cons $3) (Nil top) ]) ->
+       ([ (Cons ({ (head ($6 $7)) (tail $8) })) (Nil ()) ]))
+      where
+      (($3 <=
+        ({ (head $6)
+         (tail ([ (Cons ({ (head $7) (tail ([ (Cons $3) (Nil top) ])) | ? })) ]))
+         | ? }))
+       (([ (Cons ({ (head ($6 $7)) (tail $8) })) (Nil ()) ]) <= $8))))
+    |}];
+  (* and also here *)
+  test
+    (snoc_def ^ pairwise_def ^ "x => xs => pairwise (snoc x xs)"
+    |> Syntax.parse_exn);
+  [%expect {| (err ("Incompatible variant cases" (lower ()) (upper !))) |}]
