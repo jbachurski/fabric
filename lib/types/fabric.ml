@@ -36,11 +36,14 @@ module FabricTypeSystem :
   let field_decompose sexp ((lower, upper) : 'a Field.t * 'a Field.t) :
       ('a * 'a) list Or_error.t =
     match (lower, upper) with
-    | Bot, _ | _, Top | Absent, Absent -> Ok []
-    | Present t, Present t' -> Ok [ (t, t') ]
-    | (Absent | Top), Present _
-    | (Present _ | Top), Absent
-    | (Absent | Present _ | Top), Bot ->
+    | Bot, _ | _, Top | Absent, Absent | Absent, Optional _ -> Ok []
+    | Present t, Present t' | Optional t, Optional t' | Present t, Optional t'
+      ->
+        Ok [ (t, t') ]
+    | Top, Optional _
+    | (Top | Absent | Optional _), Present _
+    | (Top | Present _ | Optional _), Absent
+    | (Top | Absent | Present _ | Optional _), Bot ->
         let lower = Field.pretty sexp lower
         and upper = Field.pretty sexp upper in
         error_s
@@ -422,6 +425,9 @@ module FabricTyper = struct
     | Present t ->
         let t, c = Constrained.unwrap t in
         Constrained.wrap (Field.Present t, c)
+    | Optional t ->
+        let t, c = Constrained.unwrap t in
+        Constrained.wrap (Field.Optional t, c)
 
   let rec alg_of_typ (Lang.Fabric.Type.T t) =
     typ (Lang.Fabric.Type.map ~f:alg_of_typ t)
@@ -456,6 +462,11 @@ module FabricTyper = struct
         (tagty (Tag.of_string "True") (Possible (typ (Tuple []))))
         (tagty (Tag.of_string "False") (Possible (typ (Tuple []))))
     in
+    let option t =
+      Alg.join
+        (tagty (Tag.of_string "Some") (Possible t))
+        (tagty (Tag.of_string "None") (Possible (typ (Tuple []))))
+    in
     function
     | Var (x, _) -> return (var x)
     | Lit _ -> return_typ Int
@@ -485,17 +496,30 @@ module FabricTyper = struct
             |> Map.map ~f:all_in_field)
         in
         return_typ (Record (Lang.Fabric.Type.Fields.closed fs))
-    | Proj (e, f) ->
+    | Proj (e, f, c) -> (
         let$ f_ = () in
         let* e = go env e in
-        let* () =
-          e
-          <: typ
-               (Record
-                  (Label.Map.singleton (Label.of_string f) (Field.Present f_)
-                  |> Fields.open_))
-        in
-        return f_
+        match c with
+        | false ->
+            let* () =
+              e
+              <: typ
+                   (Record
+                      (Label.Map.singleton (Label.of_string f)
+                         (Field.Present f_)
+                      |> Fields.open_))
+            in
+            return f_
+        | true ->
+            let* () =
+              e
+              <: typ
+                   (Record
+                      (Label.Map.singleton (Label.of_string f)
+                         (Field.Optional f_)
+                      |> Fields.open_))
+            in
+            return (option f_))
     | Restrict (e, f) ->
         let f = Label.of_string f in
         let* e = go env e in
@@ -547,7 +571,7 @@ module FabricTyper = struct
         let* e' = go env e' in
         let* () = e <: typ Int and* () = e' <: typ Int in
         return_typ Int
-    | Op (e, ("=" | "!=" | ">" | ">=" | "<" | "<="), e') ->
+    | Op (e, ("==" | "!=" | ">" | ">=" | "<" | "<="), e') ->
         let* e = go env e in
         let* e' = go env e' in
         let* () = e <: typ Int and* () = e' <: typ Int in
@@ -586,7 +610,9 @@ let%expect_test "" =
     | Ok s -> print_s [%message (Sig.pretty s : Sexp.t)]
     | Error err -> print_s [%message (err : Error.t)]
   in
-  test (Proj (Cons [ ("foo", Lit 5); ("bar", Tuple [ Lit 1; Lit 2 ]) ], "foo"));
+  test
+    (Proj
+       (Cons [ ("foo", Lit 5); ("bar", Tuple [ Lit 1; Lit 2 ]) ], "foo", false));
   [%expect {| ("Sig.pretty s" int) |}];
   test
     (Fun
@@ -597,8 +623,9 @@ let%expect_test "" =
   test
     (Fun
        ( Atom ("x", T Top),
-         Fun (Atom ("y", T Top), Proj (Proj (Var ("x", T Top), "foo"), "bar"))
-       ));
+         Fun
+           ( Atom ("y", T Top),
+             Proj (Proj (Var ("x", T Top), "foo", false), "bar", false) ) ));
   [%expect
     {| ("Sig.pretty s" (({ (foo ({ (bar $3) | ? })) | ? }) -> (top -> $3))) |}];
   test (Extend ("foo", Lit 0, Cons [ ("foo", Lit 1) ]));
@@ -844,4 +871,15 @@ let%expect_test "" =
   test
     (snoc_def ^ pairwise_def ^ "x => xs => pairwise (snoc x xs)"
     |> Syntax.parse_exn);
-  [%expect {| (err ("Incompatible variant cases" (lower ()) (upper !))) |}]
+  [%expect {| (err ("Incompatible variant cases" (lower ()) (upper !))) |}];
+  (* Record with optional field. Simplification lacking ($1 <= $2) *)
+  test
+    ("x => match (1 == 2) with True _ => {} | False _ => { foo: x }"
+   |> Syntax.parse_exn);
+  [%expect {| ("Sig.pretty s" ($1 -> ({ (foo (? $1)) }))) |}];
+  test ("x => x.?foo" |> Syntax.parse_exn);
+  [%expect
+    {| ("Sig.pretty s" (({ (foo (? $2)) | ? }) -> ([ (None ()) (Some $2) ]))) |}];
+  (* bot, because it is never Some - but not a type error, as the operation is legal *)
+  test ("{ x : 1 }.?y" |> Syntax.parse_exn);
+  [%expect {| ("Sig.pretty s" ([ (None ()) (Some bot) ])) |}]

@@ -215,10 +215,15 @@ let proj expr =
   let+ e = atomic expr
   and+ ls =
     many1
-      (let+ () = special "." and+ l = label in
-       l)
+      (choice
+         [
+           (let+ () = special "." and+ l = label in
+            (l, false));
+           (let+ () = special ".?" and+ l = label in
+            (l, true));
+         ])
   in
-  List.fold ls ~init:e ~f:(fun e l -> Proj (e, l))
+  List.fold ls ~init:e ~f:(fun e (l, c) -> Proj (e, l, c))
 
 let restrict expr =
   let+ e = atomic expr and+ () = special "\\" and+ l = label in

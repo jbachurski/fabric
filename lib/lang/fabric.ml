@@ -31,22 +31,27 @@ module Type = struct
   let inv = function Top -> Bot | Bot -> Top
 
   module Field = struct
-    type 'a t = Top | Bot | Absent | Present of 'a
+    type 'a t = Top | Bot | Absent | Present of 'a | Optional of 'a
     [@@deriving sexp, equal, compare]
 
     let implicit_in_rest = function Absent -> true | _ -> false
-    let components = function Top | Absent | Bot -> [] | Present t -> [ t ]
+
+    let components = function
+      | Top | Absent | Bot -> []
+      | Present t | Optional t -> [ t ]
 
     let polar_map Polar.{ pos; neg = _ } = function
       | Top -> Top
       | Bot -> Bot
       | Absent -> Absent
       | Present a -> Present (pos a)
+      | Optional a -> Optional (pos a)
 
     let map ~f = polar_map { pos = f; neg = f }
 
     let pretty a : _ -> Sexp.t = function
       | Present t -> a t
+      | Optional t -> List [ Atom "?"; a t ]
       | Absent -> Atom "_"
       | Bot -> Atom "!"
       | Top -> Atom "?"
@@ -58,6 +63,9 @@ module Type = struct
       | Absent, Absent -> (Absent, Absent)
       | Present x, Present y ->
           (Present (latt.meet x y), Present (latt.join x y))
+      | Optional x, Optional y ->
+          (Optional (latt.meet x y), Optional (latt.join x y))
+      | Absent, Present x | Present x, Absent -> (Bot, Optional x)
       | _ -> (Bot, Top)
 
     let meet latt x y = fst (combine latt x y)
@@ -186,7 +194,7 @@ module Expr = struct
     | Idx of t * t
     | Shape of t
     | Cons of (string * t) list
-    | Proj of t * string
+    | Proj of t * string * bool
     | Restrict of t * string
     | Extend of string * t * t
     | Tag of string * t
@@ -235,7 +243,8 @@ module Expr = struct
           ([ Atom "{" ]
           @ List.map fs ~f:(fun (l, t) -> List [ Atom l; pretty t ])
           @ [ Atom "}" ])
-    | Proj (t, l) -> List [ pretty t; Atom "."; Atom l ]
+    | Proj (t, l, false) -> List [ pretty t; Atom "."; Atom l ]
+    | Proj (t, l, true) -> List [ pretty t; Atom ".?"; Atom l ]
     | Restrict (t, l) -> List [ pretty t; Atom "\\"; Atom l ]
     | Extend (f, e, e') ->
         List
@@ -282,7 +291,7 @@ module Expr = struct
         | Idx (e, e') -> Idx (go0 e, go0 e')
         | Shape e -> Shape (go0 e)
         | Cons fs -> Cons (List.map fs ~f:(fun (l, e) -> (l, go0 e)))
-        | Proj (e, l) -> Proj (go0 e, l)
+        | Proj (e, l, c) -> Proj (go0 e, l, c)
         | Restrict (e, l) -> Restrict (go0 e, l)
         | Extend (f, e, e') -> Extend (f, go0 e, go0 e')
         | Tag (t, e) -> Tag (t, go0 e)
@@ -312,7 +321,7 @@ module Expr = struct
     | Idx (e, e') -> !!e <|> !!e'
     | Shape e -> !!e
     | Cons fs -> List.map fs ~f:(fun (_, e) -> !!e) |> all
-    | Proj (e, _) -> !!e
+    | Proj (e, _, _) -> !!e
     | Restrict (e, _) -> !!e
     | Extend (_f, e, e') -> !!e <|> !!e'
     | Tag (_, e) -> !!e
@@ -352,7 +361,8 @@ module Expr = struct
              (List.map fs ~f:(fun (l, e) ->
                   (Label.of_string l, Type.Field.Present (type_expr e)))
              |> Label.Map.of_alist_exn |> Type.Fields.closed))
-    | Proj (e, l) -> Type.unwrap_record_field (type_expr e) (Label.of_string l)
+    | Proj (e, l, _) ->
+        Type.unwrap_record_field (type_expr e) (Label.of_string l)
     | Restrict (_e, _l) -> T Top
     | Extend (_f, _e, _e') -> T Top
     | Tag (_, _) -> T Top

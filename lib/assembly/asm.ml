@@ -132,7 +132,7 @@ let assemble_expr (module Ctx : Context) ~functions =
               List.map fs ~f:(fun (_, e) -> go env e)
               |> Array.make_of_list record_values_t );
           ]
-    | Proj (e, l) ->
+    | Proj (e, l, c) ->
         let ty = record_t.struct_type |> Type.of_heap_type in
         let v = local Type.anyref in
         let i = local Type.int32 in
@@ -163,7 +163,12 @@ let assemble_expr (module Ctx : Context) ~functions =
                          Control.break ~name:next ();
                        ]);
                 ];
-              curr_value;
+              (if c then
+                 Control.if_
+                   Operator.I32.(curr_label = target_label)
+                   (tagged "Some" curr_value)
+                   (Some (tagged "None" (tupled [])))
+               else curr_value);
             ]
     | Tag (t, e) -> tagged t (go env e)
     | Match (e, cs) ->
@@ -231,10 +236,10 @@ let assemble_expr (module Ctx : Context) ~functions =
         in
         Operator.binary op (go env e |> unwrap_int) (go env e' |> unwrap_int)
         |> wrap_int
-    | Op (e, (("=" | "!=" | ">" | ">=" | "<" | "<=") as o), e') ->
+    | Op (e, (("==" | "!=" | ">" | ">=" | "<" | "<=") as o), e') ->
         let op =
           match o with
-          | "=" -> C.Expression.Operator.I32.eq
+          | "==" -> C.Expression.Operator.I32.eq
           | "!=" -> C.Expression.Operator.I32.ne
           | ">" -> C.Expression.Operator.I32.gt
           | ">=" -> C.Expression.Operator.I32.ge
