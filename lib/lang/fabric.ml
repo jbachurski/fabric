@@ -198,7 +198,7 @@ module Expr = struct
     | Restrict of t * string
     | Extend of string * t * t
     | Tag of string * t
-    | Match of t * ((string * string) * t) list
+    | Match of t * ((string option * string) * t) list
     | Intrinsic of string * t
     | Op of t * string * t
     | Closure of int * (string * Type.t) list * Type.t
@@ -260,7 +260,13 @@ module Expr = struct
             List
               (List.map
                  ~f:(fun ((t, x), e) ->
-                   List [ Atom t; Atom x; Atom "=>"; pretty e ])
+                   List
+                     [
+                       (match t with Some t -> Atom t | None -> Atom "_");
+                       Atom x;
+                       Atom "=>";
+                       pretty e;
+                     ])
                  cs);
           ]
     | Intrinsic (f, e) -> List [ Atom ("%" ^ f); pretty e ]

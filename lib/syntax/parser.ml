@@ -7,9 +7,12 @@ open Expr
 let init_name_char c = Char.(is_lowercase c || c = '_')
 let name_char c = Char.(is_alphanum c || c = '_')
 
+let then_token w =
+  let+ () = skip_while Char.is_whitespace and+ _ = string w in
+  ()
+
 let token ~deny w =
-  let* () = skip_while Char.is_whitespace
-  and+ _ = string w
+  let* () = then_token w
   and+ next = peek_char
   and+ () = skip_while Char.is_whitespace in
   if Option.map ~f:deny next |> Option.value ~default:false then
@@ -246,7 +249,14 @@ let tagged expr =
   Tag (t, e)
 
 let match_case expr =
-  let+ t = tag
+  let+ t =
+    choice
+      [
+        (let+ () = then_token "_" in
+         None);
+        (let+ t = tag in
+         Some t);
+      ]
   and+ () = skip_many1 (satisfy Char.is_whitespace)
   and+ x = name
   and+ () = special "=>"
@@ -425,4 +435,10 @@ let%expect_test "parse expr" =
     (Ok
      (";" (";" (";" (";" (";" (== x 0) (!= x 0)) (> x 0)) (>= x 0)) (< x 0))
       (<= x 0)))
-    |}]
+    |}];
+  pparse "x.foo.?bar";
+  [%expect
+    {| (Ok ((x . foo) .? bar)) |}];
+  pparse "match x with T y => y | _ y => y";
+  [%expect
+    {| (Ok (match x ((T y => y) (_ y => y)))) |}]

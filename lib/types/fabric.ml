@@ -417,6 +417,16 @@ module FabricTyper = struct
   open Lang.Fabric.Expr
   open Type
 
+  module OptionTag = struct
+    module T = struct
+      type t = Tag.t option [@@deriving sexp, compare]
+    end
+
+    include T
+    module Map = Map.Make (T)
+    module Set = Set.Make (T)
+  end
+
   let all_in_field (fd : _ Lang.Fabric.Type.Field.t) =
     match fd with
     | Top -> Constrained.wrap (Field.Top, Constraint.truth)
@@ -544,9 +554,10 @@ module FabricTyper = struct
         let* e = go env e in
         let* cs =
           List.map
-            ~f:(fun ((t, x), e) -> (Tag.of_string t, (Var.of_string x, e)))
+            ~f:(fun ((t, x), e) ->
+              (Option.map ~f:Tag.of_string t, (Var.of_string x, e)))
             cs
-          |> Tag.Map.of_alist_exn
+          |> OptionTag.Map.of_alist_exn
           |> Map.map ~f:(fun (x, e) ->
                  let$ x_ = () in
                  let* e = go (push [ (x, x_) ] env) e in
@@ -556,7 +567,20 @@ module FabricTyper = struct
         let* () =
           e
           <: Map.fold cs ~init:(typ Bot) ~f:(fun ~key:t ~data:(x, _) ->
-                 Alg.join (tagty t (Case.Possible x)))
+                 Alg.join
+                   (match t with
+                   | Some t -> tagty t (Case.Possible x)
+                   | None ->
+                       typ
+                         (Variant
+                            Cases.
+                              {
+                                m =
+                                  Set.of_map_keys cs
+                                  |> Tag.Set.filter_map ~f:Fn.id
+                                  |> Tag.Map.of_key_set ~f:(Fn.const Case.Bot);
+                                rest = Case.Possible x;
+                              })))
         in
         return
           (Map.fold cs ~init:(typ Bot) ~f:(fun ~key:_ ~data:(_, e) ->
@@ -882,4 +906,14 @@ let%expect_test "" =
     {| ("Sig.pretty s" (({ (foo (? $2)) | ? }) -> ([ (None ()) (Some $2) ]))) |}];
   (* bot, because it is never Some - but not a type error, as the operation is legal *)
   test ("{ x : 1 }.?y" |> Syntax.parse_exn);
-  [%expect {| ("Sig.pretty s" ([ (None ()) (Some bot) ])) |}]
+  [%expect {| ("Sig.pretty s" ([ (None ()) (Some bot) ])) |}];
+  test
+    ("x => match x with Add x => x.l + x.r | Mul x => x.l * x.r | _ x => \
+      x.default" |> Syntax.parse_exn);
+  [%expect
+    {|
+    ("Sig.pretty s"
+     (([ (Add ({ (l int) (r int) | ? })) (Mul ({ (l int) (r int) | ? })) |
+       ({ (default $3) | ? }) ])
+      -> (| int $3)))
+    |}]

@@ -177,11 +177,12 @@ let assemble_expr (module Ctx : Context) ~functions =
         let vv = local Type.anyref in
         let rec cases cs =
           match cs with
-          | ((t, x), e) :: cs ->
+          | ((Some t, x), e) :: cs ->
               Control.if_
                 Operator.I32.(Const.i32' (String.hash t) = Cell.( ! ) tt)
                 (go ((x, vv) :: env) e)
                 (Some (cases cs))
+          | ((None, x), e) :: _ -> go ((x, vv) :: env) e
           | [] -> Control.unreachable ()
         in
         Control.block
