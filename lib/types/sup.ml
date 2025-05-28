@@ -411,13 +411,18 @@ module Type (M : TypeSystem) = struct
   module Alg = struct
     type dir = Bot | Top [@@deriving sexp, equal, compare]
 
-    type t =
-      | Var of Type_var.t
-      | Typ of t M.typ
-      | Apply of M.Arrow.t * t
-      | Combine of dir * t * t
-      | Complement of t
-    [@@deriving sexp, equal, compare]
+    module T = struct
+      type t =
+        | Var of Type_var.t
+        | Typ of t M.typ
+        | Apply of M.Arrow.t * t
+        | Combine of dir * t * t
+        | Complement of t
+      [@@deriving sexp, equal, compare]
+    end
+
+    include T
+    module Map = Map.Make (T)
 
     let join t t' = Combine (Top, t, t')
     let meet t t' = Combine (Bot, t, t')

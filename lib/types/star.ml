@@ -573,4 +573,46 @@ let%expect_test "" =
       (([ (| (iota $13) $14 $7) .. (& (iota $13) $14 $7) ] float) ->
        ([ ({! (a (& $10 $4 (iota $9))) (b (& (iota $13) $14 $7)) | ? !}) ..
         ({! (a $4) (b $7) | ? !}) ] float))))
+    |}];
+  (* Simpler examples *)
+  test
+    (Lam
+       ( v "a",
+         Lam
+           ( v "b",
+             Array
+               ( v "x",
+                 Product [ (lab "a", Size (Int 5)); (lab "b", Size (Int 4)) ],
+                 FloatOp
+                   ( Index (vv "a", Project (vv "x", lab "a")),
+                     Index (vv "b", Project (vv "x", lab "b")) ) ) ) ));
+  [%expect
+    {|
+    ("Sig.pretty s"
+     (([ # .. top ] float) ->
+      (([ # .. top ] float) ->
+       ([ ({! (a #) (b #) | ? !}) .. ({! (a #) (b #) | ? !}) ] float))))
+    |}];
+
+  test
+    (Lam
+       ( v "a",
+         Lam
+           ( v "b",
+             Array
+               ( v "x",
+                 Product
+                   [ (lab "p", Shape (vv "a")); (lab "q", Shape (vv "a")) ],
+                 FloatOp
+                   ( Index (vv "a", Project (vv "x", lab "p")),
+                     Index (vv "a", Project (vv "x", lab "q")) ) ) ) ));
+  [%expect
+    {|
+    ("Sig.pretty s"
+     (([ (| $10 (iota $13) $14 $4 $7 (iota $9)) ..
+       (& $10 (iota $13) $14 $4 $7 (iota $9)) ] float)
+      ->
+      (top ->
+       ([ ({! (p (& $10 $4 (iota $9))) (q (& (iota $13) $14 $7)) | ? !}) ..
+        ({! (p $4) (q $7) | ? !}) ] float))))
     |}]

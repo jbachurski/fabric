@@ -217,23 +217,21 @@ let%expect_test "struct" =
   Function.import "print_i32" "spectest" "print_i32" Type.int32 Type.none;
   let main =
     Function.make ~params:Type.none ~result:Type.none (fun _ ->
-        let open Struct in
         let open Cell in
         let foobar_t =
-          t Type.[ ("foo", field ~mut:true int32); ("bar", field int32) ]
+          Struct.t Type.[ ("foo", field ~mut:true int32); ("bar", field int32) ]
         in
         let q = local Type.anyref in
-        let q_foo = cell foobar_t !q "foo" in
-        let q_bar = cell foobar_t !q "bar" in
+        let q_foo = Struct.cell foobar_t !q "foo" in
+        let q_bar = Struct.cell foobar_t !q "bar" in
         Control.block
-          Cell.
-            [
-              q :=
-                make foobar_t
-                  [ ("foo", Const.i32' 42); ("bar", Const.i32' (1337 - 42)) ];
-              (q_foo := Operator.I32.(!q_foo + !q_bar));
-              Function.call "print_i32" [ !q_foo ] Type.none;
-            ])
+          [
+            q :=
+              Struct.make foobar_t
+                [ ("foo", Const.i32' 42); ("bar", Const.i32' (1337 - 42)) ];
+            (q_foo := Operator.I32.(!q_foo + !q_bar));
+            Function.call "print_i32" [ !q_foo ] Type.none;
+          ])
   in
   Function.export "main" main;
   Function.start main;
