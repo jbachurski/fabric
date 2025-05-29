@@ -38,6 +38,9 @@ module type Context = sig
       val ( <= ) : expr -> expr -> expr
       val ( > ) : expr -> expr -> expr
       val ( >= ) : expr -> expr -> expr
+      val ( && ) : expr -> expr -> expr
+      val ( || ) : expr -> expr -> expr
+      val ( ^^ ) : expr -> expr -> expr
     end
   end
 

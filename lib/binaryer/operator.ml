@@ -18,5 +18,8 @@ struct
     let ( <= ) = binary C.Expression.Operator.I32.le
     let ( > ) = binary C.Expression.Operator.I32.gt
     let ( >= ) = binary C.Expression.Operator.I32.ge
+    let ( && ) = binary C.Expression.Operator.I32.bitand
+    let ( || ) = binary C.Expression.Operator.I32.bitor
+    let ( ^^ ) = binary C.Expression.Operator.I32.bitxor
   end
 end

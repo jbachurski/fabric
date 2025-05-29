@@ -87,6 +87,14 @@ let assemble_expr (module Ctx : Context) ~functions =
       (tagged "True" (tupled []))
       (Some (tagged "False" (tupled [])))
   in
+  let rec pat_unpack e : Source.Expr.pattern -> (string * Cell0.t * expr) list =
+    function
+    | Atom (x, t) -> [ (x, local (source_type_repr t), e) ]
+    | List ps ->
+        let t = tuple_t (List.length ps) in
+        List.concat_mapi ps ~f:(fun i ->
+            pat_unpack (Struct.cell t e (string_of_int i) |> Cell.( ! )))
+  in
   let gensym =
     let cnt = ref 0 in
     fun prefix ->
@@ -103,19 +111,11 @@ let assemble_expr (module Ctx : Context) ~functions =
     | Lit n -> wrap_int (Const.i32' n)
     | Let (p, e, e') ->
         let v = local (source_pattern_repr p) in
-        let rec pat e : Source.Expr.pattern -> (string * Cell0.t * expr) list =
-          function
-          | Atom (x, t) -> [ (x, local (source_type_repr t), e) ]
-          | List ps ->
-              let t = tuple_t (List.length ps) in
-              List.concat_mapi ps ~f:(fun i ->
-                  pat (Struct.cell t e (string_of_int i) |> Cell.( ! )))
-        in
         let assigns, env_extras =
           match p with
           | Atom (x, _) -> ([], [ (x, v) ])
           | _ ->
-              let cs = pat Cell.(!v) p in
+              let cs = pat_unpack Cell.(!v) p in
               ( List.map cs ~f:(fun (_, c, e) -> Cell.(c := e)),
                 List.map cs ~f:(fun (x, c, _) -> (x, c)) )
         in

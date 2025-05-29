@@ -205,4 +205,15 @@ let%expect_test "compile" =
     1 : i32
     2 : i32
     3 : i32
+    |}];
+  test
+    "let (x, (y, z)) = (1, (2, 3)) in %print_i32 x; %print_i32 y; %print_i32 z";
+  [%expect
+    {|
+    (let (x (y z)) = (, 1 (, 2 3)) in
+     (";" (";" (%print_i32 x) (%print_i32 y)) (%print_i32 z)))
+    (valid true)
+    1 : i32
+    2 : i32
+    3 : i32
     |}]

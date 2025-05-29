@@ -182,6 +182,9 @@ module Functions (F : Ctypes.FOREIGN) = struct
         let le = !!"LeSInt32"
         let gt = !!"GtSInt32"
         let ge = !!"GeSInt32"
+        let bitand = !!"AndInt32"
+        let bitor = !!"OrInt32"
+        let bitxor = !!"XorInt32"
       end
     end
 
