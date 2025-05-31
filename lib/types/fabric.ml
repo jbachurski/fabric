@@ -916,4 +916,17 @@ let%expect_test "" =
      (([ (Add ({ (l int) (r int) | ? })) (Mul ({ (l int) (r int) | ? })) |
        ({ (default $3) | ? }) ])
       -> (| int $3)))
-    |}]
+    |}];
+  test
+    ("let fix = f => let z = x => f (v => x x v) in z z in\n\
+      let eval = fix (eval => e =>\n\
+      match e with \n\
+      | Add r => (eval r.fst) + (eval r.snd)\n\
+      | Mul r => (eval r.fst) * (eval r.snd)\n\
+      | _ r => r.val)\n\
+      in eval (\n\
+      Add { \n\
+      fst: Mul { fst: Lit { val: 2 }, snd: Lit { val: 3 } }, \n\
+      snd: Var { val: 1, foo: {} }\n\
+      })" |> Syntax.parse_exn);
+  [%expect {| ("Sig.pretty s" int) |}]
