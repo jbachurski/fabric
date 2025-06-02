@@ -1,5 +1,7 @@
 # Specification
 
+This is a document with working notes - see the thesis for an up-to-date formal development!
+
 ## Introduction
 
 We denote partial functions from $A$ to $B$ as $A \rightharpoonup B$.
