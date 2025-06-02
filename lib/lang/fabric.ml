@@ -186,22 +186,22 @@ module Expr = struct
   type t =
     | Var of string * Type.t
     | Lit of int
-    | Unify of string * string * t
+    | Unify of string * string * t (* experimental *)
     | Let of pattern * t * t
     | Fun of pattern * t
     | Tuple of t list
-    | Array of string * t * t
-    | Idx of t * t
-    | Shape of t
+    | Array of string * t * t (* experimental *)
+    | Idx of t * t (* experimental *)
+    | Shape of t (* experimental *)
     | Cons of (string * t) list
     | Proj of t * string * bool
     | Restrict of t * string
     | Extend of string * t * t
     | Tag of string * t
     | Match of t * ((string option * string) * t) list
-    | Intrinsic of string * t
+    | Intrinsic of string * t (* for some internal built-ins *)
     | Op of t * string * t
-    | Closure of int * (string * Type.t) list * Type.t
+    | Closure of int * (string * Type.t) list * Type.t (* internal *)
   [@@deriving equal, sexp]
 
   let pretty_var = function
