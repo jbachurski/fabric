@@ -1,5 +1,9 @@
 # Fabric
 
+Developed as part of my Master's thesis, "Breaking records: Language design with structural subtyping". 
+
+The project implements a compiler for the Fabric langugage, as presented in the thesis. It relies on structural subtyping, and implements the Warp type inference framework based on a constraint-based formulation of algebraic subtyping given in the thesis. Warp is instantiated for both Fabric and the Star calculus (as presented in "Structuring Arrays with Algebraic Shapes").
+
 ## Setup
 
 ### Dependencies
@@ -23,6 +27,8 @@ Version: 121
 Libs: -L${libdir} -lbinaryen
 Cflags: -I${includedir}
 ```
+
+*The version might have to be adapted based on the one provided by Homebrew.*
 
 ### Build
 
